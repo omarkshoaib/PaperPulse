@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Union
 from crewai.tools import BaseTool
 from pydantic import Field, BaseModel
 from datetime import datetime
+import time
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +47,7 @@ class ArxivSearchTool(BaseTool):
             }
             logger.info(f"Scraped paper: {paper['title']} ({paper['link']})")
             papers.append(paper)
+            time.sleep(2) # Added sleep
         logger.info(f"Total papers scraped: {len(papers)}")
         
         return papers

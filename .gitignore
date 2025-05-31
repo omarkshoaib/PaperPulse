@@ -38,4 +38,7 @@ backups/
 .env
 
 # Logs
-*.log 
+*.log
+
+# CSV Lock files
+.~lock.*.csv# 
