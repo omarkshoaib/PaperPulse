@@ -536,8 +536,9 @@ class ResearchPipeline:
                     pubmed_results = self.pubmed_tool._run(query=pmid_value)
                     if pubmed_results:
                         paper_data_for_row = pubmed_results[0] 
+                        # Source is usually set by the tool, ensure it's there
                         paper_data_for_row['source'] = paper_data_for_row.get('source', 'PubMed') 
-                        logger.info(f"Found paper via PubMed (PMID: {pmid_value}): {paper_data_for_row.get('Title')}")
+                        logger.info(f"Found paper via PubMed (PMID: {pmid_value}): {paper_data_for_row.get('title')}") # Changed 'Title' to 'title'
                 except Exception as e:
                     logger.error(f"Error searching PubMed with PMID '{pmid_value}': {e}", exc_info=True)
             
@@ -550,7 +551,7 @@ class ResearchPipeline:
                         if gs_results:
                             paper_data_for_row = gs_results[0]
                             paper_data_for_row['source'] = paper_data_for_row.get('source', 'Google Scholar via DOI')
-                            logger.info(f"Found paper via Google Scholar (DOI: {doi_value}): {paper_data_for_row.get('Title')}")
+                            logger.info(f"Found paper via Google Scholar (DOI: {doi_value}): {paper_data_for_row.get('title')}") # Changed to .get('title')
                     except Exception as e:
                         logger.error(f"Error searching Google Scholar with DOI '{doi_value}': {e}", exc_info=True)
                 
@@ -561,24 +562,25 @@ class ResearchPipeline:
                         if arxiv_results:
                             paper_data_for_row = arxiv_results[0]
                             paper_data_for_row['source'] = paper_data_for_row.get('source', 'arXiv via DOI')
-                            logger.info(f"Found paper via arXiv (DOI: {doi_value}): {paper_data_for_row.get('Title')}")
+                            logger.info(f"Found paper via arXiv (DOI: {doi_value}): {paper_data_for_row.get('title')}") # Changed to .get('title')
                     except Exception as e:
                         logger.error(f"Error searching arXiv with DOI '{doi_value}': {e}", exc_info=True)
             
             if paper_data_for_row:
-                final_paper_data = {
-                    'Title': paper_data_for_row.get('title', paper_data_for_row.get('Title', 'N/A')), # Handle both cases
-                    'Link': paper_data_for_row.get('link', paper_data_for_row.get('Link', '')),
-                    'Authors': paper_data_for_row.get('authors', paper_data_for_row.get('Authors', '')),
-                    'Year': str(paper_data_for_row.get('year', paper_data_for_row.get('Year', ''))),
-                    'Source': paper_data_for_row.get('source', paper_data_for_row.get('Source', 'Identifier CSV')),
-                    'Original Abstract': paper_data_for_row.get('original_abstract', paper_data_for_row.get('Original Abstract', '')),
-                    'Densified Abstract': PENDING_LLM_PLACEHOLDER,
-                    'Keywords': PENDING_LLM_PLACEHOLDER,
-                    'Relevance': PENDING_LLM_PLACEHOLDER,
-                    'FullTextPath': '' # Initialize as empty, download step will fill this
+                # Prepare data with all necessary fields using lowercase keys for deduplication and CSV writing
+                prep_data_for_dedup = {
+                    'title': paper_data_for_row.get('title', 'N/A'),
+                    'link': paper_data_for_row.get('link', ''),
+                    'authors': paper_data_for_row.get('authors', ''),
+                    'year': str(paper_data_for_row.get('year', '')),
+                    'source': paper_data_for_row.get('source', 'Identifier CSV'), # Source is set above
+                    'original_abstract': paper_data_for_row.get('original_abstract', ''),
+                    'densified_abstract': PENDING_LLM_PLACEHOLDER,
+                    'keywords': PENDING_LLM_PLACEHOLDER,
+                    'relevance': PENDING_LLM_PLACEHOLDER,
+                    'FullTextPath': '' # Initialize for potential future download
                 }
-                all_papers_from_csv.append(final_paper_data)
+                all_papers_from_csv.append(prep_data_for_dedup)
                 found_papers_count += 1
             else:
                 logger.warning(f"Could not find paper for row {index + 1} (PMID: {pmid_value}, DOI: {doi_value})")
@@ -587,34 +589,19 @@ class ResearchPipeline:
 
         if all_papers_from_csv:
             logger.info(f"Deduplicating {len(all_papers_from_csv)} papers found from CSV...")
+            # Deduplicate_results_func expects lowercase keys, all_papers_from_csv now has them.
             unique_papers_from_csv = self.deduplicate_results_func(all_papers_from_csv)
             logger.info(f"Found {len(unique_papers_from_csv)} unique papers to save.")
 
             saved_count = 0
-            for paper_to_save in unique_papers_from_csv:
+            for paper_to_save in unique_papers_from_csv: # paper_to_save has lowercase keys
                 try:
-                    # Ensure paper_to_save uses the exact FIELDNAMES keys for CSVWriterTool
-                    # The _validate_and_prepare_paper_for_csv method in CSVWriterTool expects specific keys.
-                    # The `final_paper_data` above should already be using the correct keys if tools return lowercase.
-                    # Let's ensure it one last time, mapping to FIELDNAMES from research_tools.CSVWriterTool.FIELDNAMES
-                    # This is slightly redundant if final_paper_data is already correct, but safe.
-                    csv_row_input = {
-                        'title': paper_to_save.get('Title'), # CSVWriterTool expects lowercase 'title' etc.
-                        'link': paper_to_save.get('Link'),
-                        'authors': paper_to_save.get('Authors'),
-                        'year': paper_to_save.get('Year'),
-                        'source': paper_to_save.get('Source'),
-                        'original_abstract': paper_to_save.get('Original Abstract'),
-                        'densified_abstract': paper_to_save.get('Densified Abstract', PENDING_LLM_PLACEHOLDER),
-                        'keywords': paper_to_save.get('Keywords', PENDING_LLM_PLACEHOLDER),
-                        'relevance': paper_to_save.get('Relevance', PENDING_LLM_PLACEHOLDER)
-                    }
-                    self.csv_tool._run(paper_data=csv_row_input)
+                    # CSVWriterTool's internal validation/mapping handles lowercase input keys like 'title', 'link'
+                    self.csv_tool._run(paper_data=paper_to_save)
                     saved_count += 1
-                    # Use .get with a default for Title in log, as it might be 'N/A'
-                    logger.info(f"Saved paper to main CSV: {paper_to_save.get('Title', 'UNKNOWN TITLE')}")
+                    logger.info(f"Saved paper to main CSV: {paper_to_save.get('title', 'UNKNOWN TITLE')}")
                 except Exception as e:
-                    logger.error(f"Error saving paper '{paper_to_save.get('Title', 'N/A')}' (from input CSV) to main CSV: {e}", exc_info=True)
+                    logger.error(f"Error saving paper '{paper_to_save.get('title', 'N/A')}' (from input CSV) to main CSV: {e}", exc_info=True)
             logger.info(f"Successfully saved {saved_count} unique papers from the input CSV to '{self.csv_tool.csv_filename if hasattr(self.csv_tool, 'csv_filename') else DEFAULT_CSV_FILE}'.")
         else:
             logger.info("No papers were successfully retrieved from the input CSV to save.")
