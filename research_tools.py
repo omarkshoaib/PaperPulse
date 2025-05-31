@@ -3,9 +3,9 @@ from bs4 import BeautifulSoup
 import csv
 import os
 import logging
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Optional
 from crewai.tools import BaseTool
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, validator
 from datetime import datetime
 import time
 
@@ -15,11 +15,19 @@ logger = logging.getLogger(__name__)
 
 class PaperData(BaseModel):
     """Model for paper data validation"""
-    link: str
-    title: str
-    densified_abstract: str
-    keywords: str = ""  # Optional field
-    relevance: str = ""  # Added relevance field
+    title: str = ""
+    link: str = ""
+    authors: str = ""
+    year: str = ""
+    source: str = ""
+    original_abstract: str = ""
+    densified_abstract: str = ""
+    keywords: str = ""
+    relevance: str = ""
+
+    @validator('*', pre=True, always=True)
+    def ensure_str(cls, v):
+        return str(v) if v is not None else ""
 
 class ArxivSearchTool(BaseTool):
     name: str = "ArxivSearchTool"
@@ -40,117 +48,125 @@ class ArxivSearchTool(BaseTool):
         
         papers = []
         for entry in soup.find_all('entry'):
+            authors_list = [author.find('name').text for author in entry.find_all('author')]
             paper = {
                 'title': entry.title.text.strip(),
                 'link': entry.link['href'],
-                'abstract': entry.summary.text.strip()
+                'original_abstract': entry.summary.text.strip(),
+                'authors': ", ".join(authors_list),
+                'year': entry.published.text.split('-')[0],
+                'source': 'arXiv'
             }
             logger.info(f"Scraped paper: {paper['title']} ({paper['link']})")
             papers.append(paper)
-            time.sleep(2) # Added sleep
-        logger.info(f"Total papers scraped: {len(papers)}")
+            time.sleep(2)
+        logger.info(f"Total papers scraped from arXiv: {len(papers)}")
         
         return papers
 
 class CSVWriterTool(BaseTool):
     name: str = "CSVWriterTool"
     description: str = "A tool for writing research results to a CSV file"
-    output_file: str = Field(default="research_results.csv")
+    csv_filename: str = Field(default="research_results.csv")
     backup_dir: str = Field(default="backups")
+
+    FIELDNAMES: List[str] = [
+        'Title', 'Link', 'Authors', 'Year', 'Source', 
+        'Original Abstract', 'Densified Abstract', 'Keywords', 'Relevance', 'Timestamp'
+    ]
 
     def __init__(self, **data):
         super().__init__(**data)
         self._ensure_backup_dir()
-        self._initialize_csv()
+        if not os.path.exists(self.csv_filename) or os.path.getsize(self.csv_filename) == 0:
+            self._initialize_csv_with_headers()
+        else:
+            logger.info(f"CSV file '{self.csv_filename}' already exists and is not empty. Will append.")
 
     def _ensure_backup_dir(self):
-        """Create backup directory if it doesn't exist"""
         if not os.path.exists(self.backup_dir):
             os.makedirs(self.backup_dir)
+            logger.info(f"Created backup directory: {self.backup_dir}")
 
     def _backup_existing_file(self):
-        """Create a backup of the existing CSV file if it exists"""
-        if os.path.exists(self.output_file):
+        if os.path.exists(self.csv_filename):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = os.path.join(self.backup_dir, f"research_results_{timestamp}.csv")
+            backup_file = os.path.join(self.backup_dir, f"{os.path.splitext(self.csv_filename)[0]}_{timestamp}.csv")
             try:
-                os.rename(self.output_file, backup_file)
-                logger.info(f"Created backup: {backup_file}")
+                os.rename(self.csv_filename, backup_file)
+                logger.info(f"Created backup of existing file: {backup_file}")
+                return True
             except Exception as e:
-                logger.error(f"Failed to create backup: {str(e)}")
+                logger.error(f"Failed to create backup for {self.csv_filename}: {e}")
+        return False
 
-    def _initialize_csv(self):
-        """Initialize the CSV file with headers"""
+    def _initialize_csv_with_headers(self):
         try:
-            # Create backup of existing file if it exists
-            self._backup_existing_file()
-            
-            # Create new file with headers
-            with open(self.output_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Paper Link', 'Title', 'Densified Abstract', 'Keywords', 'Relevance', 'Timestamp'])
-            logger.info(f"Initialized CSV file: {self.output_file}")
+            if self._backup_existing_file() or not os.path.exists(self.csv_filename):
+                 logger.info(f"Initializing new CSV file with headers: {self.csv_filename}")
+            else:
+                 logger.warning(f"File {self.csv_filename} exists but was not backed up. Will not overwrite headers.")
+                 return
+
+            with open(self.csv_filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
+                writer.writeheader()
+            logger.info(f"Initialized CSV file '{self.csv_filename}' with headers.")
         except Exception as e:
-            logger.error(f"Failed to initialize CSV file: {str(e)}")
-            raise
+            logger.error(f"Failed to initialize CSV file '{self.csv_filename}': {e}")
 
-    def _validate_paper_data(self, paper_data: Dict[str, str]) -> PaperData:
-        """Validate and clean paper data"""
+    def _validate_and_prepare_paper_for_csv(self, paper_data_dict: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            # Ensure all required fields are present
-            required_fields = ['link', 'title', 'densified_abstract', 'relevance']
-            for field in required_fields:
-                if field not in paper_data:
-                    paper_data[field] = ''
+            validated_model = PaperData(**paper_data_dict)
             
-            # Clean the data
-            cleaned_data = {
-                'link': str(paper_data.get('link', '')).strip(),
-                'title': str(paper_data.get('title', '')).strip(),
-                'densified_abstract': str(paper_data.get('densified_abstract', '')).strip(),
-                'keywords': str(paper_data.get('keywords', '')).strip(),
-                'relevance': str(paper_data.get('relevance', '')).strip()
+            csv_row = {
+                'Title': validated_model.title,
+                'Link': validated_model.link,
+                'Authors': validated_model.authors,
+                'Year': validated_model.year,
+                'Source': validated_model.source,
+                'Original Abstract': validated_model.original_abstract,
+                'Densified Abstract': validated_model.densified_abstract,
+                'Keywords': validated_model.keywords,
+                'Relevance': validated_model.relevance,
+                'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
-            
-            return PaperData(**cleaned_data)
+            return csv_row
         except Exception as e:
-            logger.error(f"Data validation failed: {str(e)}")
-            raise
+            logger.error(f"Data validation/preparation for CSV failed for title '{paper_data_dict.get('title', 'UNKNOWN')}': {e}", exc_info=True)
+            return {field: "VALIDATION_ERROR" for field in self.FIELDNAMES}
 
-    def _run(self, paper_data: Union[Dict[str, str], List[Dict[str, str]]]) -> bool:
-        """
-        Write paper data to CSV file
-        Args:
-            paper_data: Either a single paper dict or a list of paper dicts
-        Returns:
-            bool: True if successful, False otherwise
-        """
+    def _run(self, paper_data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> bool:
+        if isinstance(paper_data, dict):
+            papers_to_write = [paper_data]
+        elif isinstance(paper_data, list):
+            papers_to_write = paper_data
+        else:
+            logger.error(f"Invalid paper_data type: {type(paper_data)}. Expected dict or list of dicts.")
+            return False
+
+        if not papers_to_write:
+            logger.info("No paper data provided to write.")
+            return True
+
         try:
-            # Convert single paper to list
-            if isinstance(paper_data, dict):
-                paper_data = [paper_data]
+            file_exists_and_has_content = os.path.exists(self.csv_filename) and os.path.getsize(self.csv_filename) > 0
             
-            # Validate and write each paper
-            with open(self.output_file, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(self.csv_filename, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
                 
-                for paper in paper_data:
-                    # Validate and clean the data
-                    validated_paper = self._validate_paper_data(paper)
-                    
-                    # Write to CSV
-                    writer.writerow([
-                        validated_paper.link,
-                        validated_paper.title,
-                        validated_paper.densified_abstract,
-                        validated_paper.keywords,
-                        validated_paper.relevance,
-                        timestamp
-                    ])
-                    logger.info(f"Successfully wrote paper to CSV: {validated_paper.title}")
-            
+                if not file_exists_and_has_content and not (os.path.exists(self.csv_filename) and os.path.getsize(self.csv_filename) > 0) :
+                     logger.info(f"File '{self.csv_filename}' appears empty before appending; writing headers.")
+                     writer.writeheader()
+                
+                for single_paper_dict in papers_to_write:
+                    csv_row_dict = self._validate_and_prepare_paper_for_csv(single_paper_dict)
+                    writer.writerow(csv_row_dict)
+                    logger.info(f"Successfully wrote paper to CSV: {csv_row_dict.get('Title', 'UNKNOWN TITLE')}")
             return True
         except Exception as e:
-            logger.error(f"Error writing to CSV: {str(e)}")
-            return False 
+            logger.error(f"Error writing to CSV '{self.csv_filename}': {e}", exc_info=True)
+            return False
+
+# Note: GoogleScholarSearchTool and PubMedSearchTool from search_tools.py are used by ResearchPipeline
+# but their definitions are not in this file. This file focuses on Arxiv and CSV tools. 

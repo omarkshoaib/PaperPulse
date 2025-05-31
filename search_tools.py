@@ -10,6 +10,7 @@ from Bio import Entrez
 import os
 from datetime import datetime
 from pydantic import Field
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -19,187 +20,156 @@ class PubMedSearchTool(BaseTool):
     name: str = "PubMedSearchTool"
     description: str = "A tool for searching and retrieving papers from PubMed"
     base_url: str = Field(default="https://eutils.ncbi.nlm.nih.gov/entrez/eutils/")
-    api_key: str = Field(default="")
-    email: str = Field(default="")
+    api_key: Optional[str] = Field(default=None)
+    email: str = Field(default="omarkshoaib@gmail.com")
     max_results: int = Field(default=5)
 
     def _run(self, query: str) -> List[Dict[str, str]]:
-        logger.info(f"Starting PubMed search for query: {query}, max_results: {self.max_results}")
+        logger.info(f"Starting PubMed search for query: '{query}', max_results: {self.max_results}")
         
-        # Configure Entrez
         Entrez.email = self.email
         if self.api_key:
             Entrez.api_key = self.api_key
         
-        # First, search for paper IDs
-        search_params = {
-            'db': 'pubmed',
-            'term': query,
-            'retmax': self.max_results,
-            'retmode': 'json',
-            'api_key': self.api_key
-        }
+        search_handle = Entrez.esearch(db="pubmed", term=query, retmax=str(self.max_results), idtype="acc")
+        search_results = Entrez.read(search_handle)
+        search_handle.close()
         
-        search_url = f"{self.base_url}esearch.fcgi"
-        response = requests.get(search_url, params=search_params)
-        search_data = response.json()
-        
-        if 'esearchresult' not in search_data or 'idlist' not in search_data['esearchresult']:
-            logger.error("No results found in PubMed search")
+        paper_ids = search_results["IdList"]
+        if not paper_ids:
+            logger.info(f"No results found in PubMed for query: '{query}'")
             return []
         
-        paper_ids = search_data['esearchresult']['idlist']
         papers = []
-        
-        # Then fetch details for each paper
-        for paper_id in paper_ids:
-            fetch_params = {
-                'db': 'pubmed',
-                'id': paper_id,
-                'retmode': 'xml',
-                'api_key': self.api_key
-            }
-            
-            fetch_url = f"{self.base_url}efetch.fcgi"
-            response = requests.get(fetch_url, params=fetch_params)
-            soup = BeautifulSoup(response.text, 'xml')
-            
-            article = soup.find('PubmedArticle')
-            if article:
-                # Extract title
-                title = article.find('ArticleTitle')
-                title_text = title.text if title else ''
+        fetch_handle = Entrez.efetch(db="pubmed", id=paper_ids, rettype="xml")
+        records = Entrez.read(fetch_handle)['PubmedArticle']
+        fetch_handle.close()
+
+        for record in records:
+            try:
+                article = record['MedlineCitation']['Article']
+                title = article.get('ArticleTitle', '')
                 
-                # Extract authors
-                authors = article.find_all('Author')
-                author_list = []
-                for author in authors:
-                    last_name = author.find('LastName')
-                    fore_name = author.find('ForeName')
-                    if last_name and fore_name:
-                        author_list.append(f"{last_name.text} {fore_name.text}")
-                authors_text = '; '.join(author_list)
-                
-                # Extract year
-                pub_date = article.find('PubDate')
+                authors_list = []
+                if 'AuthorList' in article and article['AuthorList']:
+                    for author_info in article['AuthorList']:
+                        last_name = author_info.get('LastName', '')
+                        fore_name = author_info.get('ForeName', '')
+                        if last_name or fore_name:
+                             authors_list.append(f"{fore_name} {last_name}".strip())
+                authors_str = ", ".join(authors_list)
+
                 year = ''
-                if pub_date:
-                    year_elem = pub_date.find('Year')
-                    year = year_elem.text if year_elem else ''
+                if 'Journal' in article and 'JournalIssue' in article['Journal'] and 'PubDate' in article['Journal']['JournalIssue']:
+                    pub_date = article['Journal']['JournalIssue']['PubDate']
+                    year = pub_date.get('Year', '')
+                    if not year and 'MedlineDate' in pub_date:
+                        year_match = re.search(r'^(\d{4})', pub_date['MedlineDate'])
+                        if year_match: year = year_match.group(1)
+
+                original_abstract_text = ''
+                if 'Abstract' in article and article['Abstract'] and article['Abstract'].get('AbstractText'):
+                    abstract_parts = article['Abstract']['AbstractText']
+                    if isinstance(abstract_parts, list):
+                        original_abstract_text = " ".join(str(part) for part in abstract_parts)
+                    else:
+                        original_abstract_text = str(abstract_parts)
                 
-                # Extract abstract
-                abstract = article.find('Abstract')
-                abstract_text = ''
-                if abstract:
-                    abstract_text = ' '.join([text.text for text in abstract.find_all('AbstractText')])
-                
-                paper = {
-                    'title': title_text.strip(),
-                    'authors': authors_text.strip(),
-                    'year': year.strip(),
-                    'source': 'pubmed',
-                    'densified_abstract': abstract_text.strip(),
-                    'keywords': '',
-                    'relevance': ''
+                pmid = record['MedlineCitation']['PMID']
+                link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+
+                paper_entry = {
+                    'title': str(title).strip(),
+                    'link': link,
+                    'authors': authors_str.strip(),
+                    'year': str(year).strip(),
+                    'source': 'PubMed',
+                    'original_abstract': original_abstract_text.strip(),
                 }
-                logger.info(f"Scraped paper: {paper['title']} (PubMed)")
-                papers.append(paper)
+                papers.append(paper_entry)
+                logger.info(f"Scraped from PubMed: {paper_entry['title']}")
+            except Exception as e:
+                logger.error(f"Error processing PubMed record: {e}", exc_info=True)
             time.sleep(1)
         
         logger.info(f"Total papers scraped from PubMed: {len(papers)}")
         return papers
 
 class GoogleScholarSearchTool(BaseTool):
-    name: str = "Google Scholar Search Tool"
-    description: str = "Search for papers on Google Scholar"
-    max_results: int = Field(default=10)
+    name: str = "GoogleScholarSearchTool"
+    description: str = "Search for papers on Google Scholar using the scholarly library."
+    max_results: int = Field(default=5)
     
     def _run(self, query: str) -> List[Dict[str, str]]:
-        """Run the tool."""
-        logger.info(f"Starting Google Scholar scrape for query: {query}, max_results: {self.max_results}")
-        results = []
-        
-        # Set up proxy to avoid captcha
-        try:
-            pg = ProxyGenerator()
-            pg.FreeProxies()
-            scholarly.use_proxy(pg)
-            logger.info("Using free proxies for Google Scholar searches")
-        except Exception as e:
-            logger.warning(f"Failed to set up proxy for Google Scholar: {e}")
+        logger.info(f"Starting Google Scholar scrape for query: '{query}', max_results: {self.max_results}")
+        results: List[Dict[str, str]] = []
         
         try:
-            # Search for papers
-            search_query = scholarly.search_pubs(query)
-            
-            for i in range(self.max_results):
+            search_iter = scholarly.search_pubs(query)
+            count = 0
+            for paper_obj in search_iter:
+                if count >= self.max_results:
+                    break
                 try:
-                    paper = next(search_query)
-                    if not paper:
-                        break
-                        
-                    # Extract paper data safely
-                    if hasattr(paper, 'bib'):
-                        paper_data = paper.bib
-                    else:
-                        paper_data = paper.get('bib', {})
+                    bib = paper_obj.get('bib', {})
+                    title = bib.get('title', '')
+                    if not title:
+                        continue
+
+                    authors_list = bib.get('author', [])
+                    authors_str = ", ".join(authors_list) if isinstance(authors_list, list) else str(authors_list)
                     
-                    # Create paper entry with all required fields
+                    year_val = bib.get('pub_year', '')
+                    year_str = str(year_val) if year_val else ''
+                    
+                    abstract = bib.get('abstract', '')
+                    
+                    link_val = paper_obj.get('pub_url', paper_obj.get('eprint_url', ''))
+
                     paper_entry = {
-                        'title': paper_data.get('title', ''),
-                        'authors': paper_data.get('author', 'Unknown'),
-                        'year': paper_data.get('pub_year', 'Unknown'),
+                        'title': title.strip(),
+                        'link': str(link_val).strip(),
+                        'authors': authors_str.strip(),
+                        'year': year_str.strip(),
                         'source': 'Google Scholar',
-                        'densified_abstract': paper_data.get('abstract', ''),
-                        'keywords': [],
-                        'relevance': ''
+                        'original_abstract': abstract.strip(),
                     }
-                    
-                    # Only add papers with valid titles
-                    if paper_entry['title']:
-                        results.append(paper_entry)
-                        
-                except Exception as e:
-                    err_msg = str(e).lower()
-                    # Detect captcha or rate-limit
-                    if 'captcha' in err_msg or 'too many requests' in err_msg or '429' in err_msg:
-                        # Open browser for manual captcha solving
-                        try:
-                            import webbrowser, requests as _req
-                            url = f"https://scholar.google.com/scholar?hl=en&q={_req.utils.quote(query)}"
-                            logger.info(f"Opening browser to solve captcha: {url}")
-                            webbrowser.open(url)
-                            input("Please solve the captcha in your browser, then press Enter here to continue scraping...")
-                            # Restart search
-                            search_query = scholarly.search_pubs(query)
-                            continue
-                        except Exception as browser_e:
-                            logger.error(f"Failed to open browser for captcha: {browser_e}")
-                            break
-                    logger.error(f"Error processing paper: {str(e)}")
-                    continue
+                    results.append(paper_entry)
+                    logger.info(f"Scraped from Google Scholar: {title}")
+                    count += 1
+                except Exception as e_paper:
+                    logger.error(f"Error processing a Google Scholar paper entry for query '{query}': {e_paper}", exc_info=True)
                 time.sleep(2)
             
-        except Exception as e:
-            logger.error(f"Error in Google Scholar search: {str(e)}")
-            
-        logger.info(f"Total papers scraped from Google Scholar: {len(results)}")
+        except Exception as e_search:
+            logger.error(f"Error during Google Scholar search for query '{query}': {e_search}", exc_info=True)
+            if "captcha" in str(e_search).lower() or "429" in str(e_search):
+                logger.warning("Google Scholar CAPTCHA or rate limit hit. Consider manual search or longer delays.")
+
+        logger.info(f"Total papers scraped from Google Scholar for query '{query}': {len(results)}")
         return results
 
 def deduplicate_results(results: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """Remove duplicate papers based on title similarity."""
-    seen_titles = set()
+    seen_identifiers = set()
     unique_results = []
     
     for result in results:
-        # Normalize title for comparison
-        title = result['title'].lower().strip()
-        title = ''.join(c for c in title if c.isalnum() or c.isspace())
+        title = str(result.get('title', '')).lower().strip()
+        normalized_title = re.sub(r'[^a-z0-9\s]', '', title)
+        normalized_title = re.sub(r'\s+', ' ', normalized_title).strip()
         
-        if title not in seen_titles:
-            seen_titles.add(title)
+        link = str(result.get('link', '')).strip()
+        
+        identifier = link if link else normalized_title
+        
+        if not identifier:
+            continue
+            
+        if identifier not in seen_identifiers:
+            seen_identifiers.add(identifier)
             unique_results.append(result)
         else:
-            logger.info(f"Removed duplicate: {result['title']}")
+            logger.info(f"Removed duplicate: {result.get('title', 'N/A')} (Identifier: {identifier[:50]}...)")
             
+    logger.info(f"Deduplication complete. Input: {len(results)}, Output: {len(unique_results)}")
     return unique_results 
