@@ -24,6 +24,7 @@ class PaperData(BaseModel):
     densified_abstract: str = ""
     keywords: str = ""
     relevance: str = ""
+    FullTextPath: Optional[str] = ""
 
     @validator('*', pre=True, always=True)
     def ensure_str(cls, v):
@@ -72,7 +73,8 @@ class CSVWriterTool(BaseTool):
 
     FIELDNAMES: List[str] = [
         'Title', 'Link', 'Authors', 'Year', 'Source', 
-        'Original Abstract', 'Densified Abstract', 'Keywords', 'Relevance', 'Timestamp'
+        'Original Abstract', 'Densified Abstract', 'Keywords', 'Relevance', 'Timestamp',
+        'FullTextPath'
     ]
 
     def __init__(self, **data):
@@ -102,22 +104,41 @@ class CSVWriterTool(BaseTool):
 
     def _initialize_csv_with_headers(self):
         try:
-            if self._backup_existing_file() or not os.path.exists(self.csv_filename):
-                 logger.info(f"Initializing new CSV file with headers: {self.csv_filename}")
-            else:
-                 logger.warning(f"File {self.csv_filename} exists but was not backed up. Will not overwrite headers.")
-                 return
+            should_write_new = False
+            if os.path.exists(self.csv_filename) and os.path.getsize(self.csv_filename) > 0:
+                if self._backup_existing_file():
+                    should_write_new = True
+                else:
+                    logger.warning(f"File {self.csv_filename} exists but was not backed up. Will not overwrite headers.")
+                    return
+            elif not os.path.exists(self.csv_filename):
+                should_write_new = True
+            
+            if should_write_new:
+                logger.info(f"Initializing new CSV file with headers: {self.csv_filename}")
+                with open(self.csv_filename, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
+                    writer.writeheader()
+                logger.info(f"Initialized CSV file '{self.csv_filename}' with headers.")
 
-            with open(self.csv_filename, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
-                writer.writeheader()
-            logger.info(f"Initialized CSV file '{self.csv_filename}' with headers.")
         except Exception as e:
             logger.error(f"Failed to initialize CSV file '{self.csv_filename}': {e}")
 
     def _validate_and_prepare_paper_for_csv(self, paper_data_dict: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            validated_model = PaperData(**paper_data_dict)
+            mapped_input = {
+                'title': paper_data_dict.get('title', paper_data_dict.get('Title', '')),
+                'link': paper_data_dict.get('link', paper_data_dict.get('Link', '')),
+                'authors': paper_data_dict.get('authors', paper_data_dict.get('Authors', '')),
+                'year': paper_data_dict.get('year', paper_data_dict.get('Year', '')),
+                'source': paper_data_dict.get('source', paper_data_dict.get('Source', '')),
+                'original_abstract': paper_data_dict.get('original_abstract', paper_data_dict.get('Original Abstract', '')),
+                'densified_abstract': paper_data_dict.get('densified_abstract', paper_data_dict.get('Densified Abstract', '')),
+                'keywords': paper_data_dict.get('keywords', paper_data_dict.get('Keywords', '')),
+                'relevance': paper_data_dict.get('relevance', paper_data_dict.get('Relevance', '')),
+                'FullTextPath': paper_data_dict.get('FullTextPath', '')
+            }
+            validated_model = PaperData(**mapped_input)
             
             csv_row = {
                 'Title': validated_model.title,
@@ -129,12 +150,17 @@ class CSVWriterTool(BaseTool):
                 'Densified Abstract': validated_model.densified_abstract,
                 'Keywords': validated_model.keywords,
                 'Relevance': validated_model.relevance,
-                'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'FullTextPath': validated_model.FullTextPath
             }
             return csv_row
         except Exception as e:
-            logger.error(f"Data validation/preparation for CSV failed for title '{paper_data_dict.get('title', 'UNKNOWN')}': {e}", exc_info=True)
-            return {field: "VALIDATION_ERROR" for field in self.FIELDNAMES}
+            title_for_error = paper_data_dict.get('title', paper_data_dict.get('Title', 'UNKNOWN'))
+            logger.error(f"Data validation/preparation for CSV failed for title '{title_for_error}': {e}", exc_info=True)
+            error_row = {field: "VALIDATION_ERROR" for field in self.FIELDNAMES}
+            error_row['Title'] = title_for_error
+            error_row['Timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            return error_row
 
     def _run(self, paper_data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> bool:
         if isinstance(paper_data, dict):
@@ -150,13 +176,13 @@ class CSVWriterTool(BaseTool):
             return True
 
         try:
-            file_exists_and_has_content = os.path.exists(self.csv_filename) and os.path.getsize(self.csv_filename) > 0
-            
+            is_file_empty = not os.path.exists(self.csv_filename) or os.path.getsize(self.csv_filename) == 0
+
             with open(self.csv_filename, 'a', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
                 
-                if not file_exists_and_has_content and not (os.path.exists(self.csv_filename) and os.path.getsize(self.csv_filename) > 0) :
-                     logger.info(f"File '{self.csv_filename}' appears empty before appending; writing headers.")
+                if is_file_empty:
+                     logger.info(f"File '{self.csv_filename}' is empty or new before appending; writing headers.")
                      writer.writeheader()
                 
                 for single_paper_dict in papers_to_write:
