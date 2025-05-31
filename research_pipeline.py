@@ -244,16 +244,20 @@ class ResearchPipeline:
             return
         
         # Ensure all expected columns exist, creating them if necessary
-        expected_cols = ['title', 'link', 'original_abstract', 'authors', 'year', 'source', 'densified_abstract', 'keywords', 'relevance']
+        expected_cols = [ # These must match CSVWriterTool.FIELDNAMES exactly
+            'Title', 'Link', 'Authors', 'Year', 'Source', 
+            'Original Abstract', 'Densified Abstract', 'Keywords', 'Relevance'
+            # 'Timestamp' is in FIELDNAMES but not strictly needed for this processing logic directly
+        ]
         for col in expected_cols:
             if col not in df.columns:
                 logger.info(f"Column '{col}' not found in CSV, adding it.")
-                df[col] = PENDING_LLM_PLACEHOLDER if col in ['densified_abstract', 'keywords', 'relevance'] else ''
+                df[col] = PENDING_LLM_PLACEHOLDER if col in ['Densified Abstract', 'Keywords', 'Relevance'] else ''
         
         # Ensure original_abstract is not NaN and is a string for LLM processing
-        df['original_abstract'] = df['original_abstract'].astype(str).fillna('')
+        df['Original Abstract'] = df['Original Abstract'].astype(str).fillna('')
         # Initialize LLM fields if they are completely empty or NaN, to ensure they are strings for comparison
-        for col in ['densified_abstract', 'keywords', 'relevance']:
+        for col in ['Densified Abstract', 'Keywords', 'Relevance']:
             df[col] = df[col].astype(str).fillna(PENDING_LLM_PLACEHOLDER)
             df[col] = df[col].apply(lambda x: PENDING_LLM_PLACEHOLDER if not x.strip() else x)
 
@@ -262,7 +266,7 @@ class ResearchPipeline:
 
         for index, row in df.iterrows():
             # Check if densified_abstract indicates a need for processing
-            current_densified = str(row.get('densified_abstract', '')).strip()
+            current_densified = str(row.get('Densified Abstract', '')).strip()
             if current_densified == PENDING_LLM_PLACEHOLDER or not current_densified:
                 papers_to_update_indices.append(index)
         
@@ -274,14 +278,14 @@ class ResearchPipeline:
 
         for index in papers_to_update_indices:
             row = df.loc[index]
-            title = str(row.get('title', 'N/A'))
-            original_abstract_text = str(row.get('original_abstract', '')).strip()
+            title = str(row.get('Title', 'N/A'))
+            original_abstract_text = str(row.get('Original Abstract', '')).strip()
 
             if not original_abstract_text:
                 logger.warning(f"Skipping paper '{title}' due to empty original_abstract.")
-                df.loc[index, 'densified_abstract'] = "SKIPPED_EMPTY_ABSTRACT"
-                df.loc[index, 'keywords'] = "SKIPPED_EMPTY_ABSTRACT"
-                df.loc[index, 'relevance'] = "SKIPPED_EMPTY_ABSTRACT"
+                df.loc[index, 'Densified Abstract'] = "SKIPPED_EMPTY_ABSTRACT"
+                df.loc[index, 'Keywords'] = "SKIPPED_EMPTY_ABSTRACT"
+                df.loc[index, 'Relevance'] = "SKIPPED_EMPTY_ABSTRACT"
                 continue
 
             logger.info(f"Processing paper ({papers_processed_count + 1}/{len(papers_to_update_indices)}): {title}")
@@ -289,11 +293,11 @@ class ResearchPipeline:
             # Prepare paper data for the summarizer agent
             paper_for_llm = {
                 "title": title,
-                "link": str(row.get('link', '')),
+                "link": str(row.get('Link', '')),
                 "original_abstract": original_abstract_text,
-                "source": str(row.get('source', '')),
-                "authors": str(row.get('authors', '')),
-                "year": str(row.get('year', ''))
+                "source": str(row.get('Source', '')),
+                "authors": str(row.get('Authors', '')),
+                "year": str(row.get('Year', ''))
             }
 
             # Summarization Task
@@ -338,8 +342,8 @@ class ResearchPipeline:
             else:
                 logger.warning(f"Summarization task produced no raw output for '{title}'.")
 
-            df.loc[index, 'densified_abstract'] = densified_abstract_val
-            df.loc[index, 'keywords'] = keywords_str_val
+            df.loc[index, 'Densified Abstract'] = densified_abstract_val
+            df.loc[index, 'Keywords'] = keywords_str_val
             logger.info(f"Summarized '{title}'. Keywords: {keywords_str_val[:100]}...")
             
             # Validation Task
@@ -368,7 +372,7 @@ class ResearchPipeline:
             else:
                 logger.info(f"Skipping validation for '{title}' due to summarization error or empty abstract.")
             
-            df.loc[index, 'relevance'] = relevance_val
+            df.loc[index, 'Relevance'] = relevance_val
             logger.info(f"Validated '{title}' as: {relevance_val}")
             papers_processed_count += 1
             
