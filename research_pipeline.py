@@ -609,7 +609,8 @@ class ResearchPipeline:
     def download_pubmed_full_text_from_csv(self, csv_filepath: str = DEFAULT_CSV_FILE):
         logger.info(f"Starting full text download process for PubMed papers in '{csv_filepath}'")
         try:
-            df = pd.read_csv(csv_filepath, dtype=str).fillna('')
+            # Use the FIELDNAMES from CSVWriterTool to define columns, skip the existing header
+            df = pd.read_csv(csv_filepath, dtype=str, names=self.csv_tool.FIELDNAMES, header=0).fillna('')
         except FileNotFoundError:
             logger.error(f"CSV file not found: {csv_filepath}. Cannot download full texts.")
             print(f"Error: CSV file '{csv_filepath}' not found.")
