@@ -10,6 +10,19 @@ import logging
 import pandas as pd # For CSV processing
 import re # Add re for robust JSON extraction
 from Bio import Entrez # For PubMed full text download
+from bs4 import BeautifulSoup # Added for parsing HTML
+import csv
+from urllib.parse import urljoin, urlparse # For constructing absolute URLs
+
+# Selenium imports
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -25,9 +38,14 @@ DOWNLOAD_STATUS_FAILED = "DOWNLOAD_FAILED"
 DOWNLOAD_STATUS_NOT_PUBMED = "NOT_A_PUBMED_ENTRY"
 DOWNLOAD_STATUS_NO_LINK = "NO_LINK_IN_CSV"
 DOWNLOAD_STATUS_BAD_LINK = "MALFORMED_PUBMED_LINK"
+DOWNLOAD_STATUS_HTML_CONTENT = "HTML_CONTENT_RETURNED"
+DOWNLOAD_STATUS_PMC_FORBIDDEN = "PMC_FORBIDDEN"
+DOWNLOAD_STATUS_PDF_FORBIDDEN = "PDF_FORBIDDEN"
+DOWNLOAD_STATUS_PENDING = "PENDING_DOWNLOAD"
+DOWNLOAD_STATUS_SUCCESS = "DOWNLOAD_SUCCESS"
 
 class ResearchPipeline:
-    def __init__(self,
+    def __init__(self, 
                  provider: Optional[str] = None, # LLM provider, optional at init
                  model_name: Optional[str] = None, # LLM model, optional at init
                  base_url: Optional[str] = None, # For Ollama, optional at init
@@ -387,7 +405,7 @@ class ResearchPipeline:
             )
             summarize_task = Task(
                 description=summarize_task_desc,
-                agent=self.summarizer_agent,
+            agent=self.summarizer_agent,
                 expected_output="A single JSON object with keys 'densified_abstract' and 'keywords'."
             )
             
@@ -608,14 +626,11 @@ class ResearchPipeline:
 
     def download_pubmed_full_text_from_csv(self, csv_filepath: str = DEFAULT_CSV_FILE):
         logger.info(f"Starting full text download process for PubMed papers in '{csv_filepath}'")
+        
         try:
-            # Use FIELDNAMES to define columns, and header=None to ignore the physical header for field count determination.
-            # The first physical line (old header) will be read as data.
             df = pd.read_csv(csv_filepath, dtype=str, names=self.csv_tool.FIELDNAMES, header=None).fillna('')
-            # If the first row read is indeed the header (e.g., Title == "Title"), skip it.
             if not df.empty and df.iloc[0][self.csv_tool.FIELDNAMES[0]] == self.csv_tool.FIELDNAMES[0]:
                 df = df.iloc[1:].reset_index(drop=True)
-
         except FileNotFoundError:
             logger.error(f"CSV file not found: {csv_filepath}. Cannot download full texts.")
             print(f"Error: CSV file '{csv_filepath}' not found.")
@@ -624,103 +639,364 @@ class ResearchPipeline:
             logger.error(f"CSV file is empty: {csv_filepath}. Nothing to process for downloads.")
             print(f"CSV file '{csv_filepath}' is empty.")
             return
-
-        if 'FullTextPath' not in df.columns:
-            logger.info("'FullTextPath' column not found in CSV, adding it.")
-            df['FullTextPath'] = ''
-        else: # Ensure existing values are treated as strings
-            df['FullTextPath'] = df['FullTextPath'].astype(str).fillna('')
-
-        papers_to_download_indices = []
-        for index, row in df.iterrows():
-            source = str(row.get('Source', '')).strip().lower()
-            full_text_path_val = str(row.get('FullTextPath', '')).strip()
-            # Only attempt download if it's a PubMed source and path is empty (or not a previous failure/status message)
-            if source == 'pubmed' and not full_text_path_val:
-                papers_to_download_indices.append(index)
-        
-        if not papers_to_download_indices:
-            logger.info("No PubMed papers found in CSV requiring full text download attempt (or all attempted).")
+        except Exception as e: # Catch other CSV reading errors
+            logger.error(f"Error reading or processing CSV '{csv_filepath}' for download: {e}", exc_info=True)
+            print(f"Error: Could not process CSV '{csv_filepath}'. Check logs.")
             return
 
-        logger.info(f"Found {len(papers_to_download_indices)} PubMed papers to attempt full text download.")
+        if 'FullTextPath' not in df.columns:
+            df['FullTextPath'] = ''
+        df['FullTextPath'] = df['FullTextPath'].astype(str).fillna('')
+
+        original_entrez_email, original_entrez_api_key = Entrez.email, Entrez.api_key
+        if self.pubmed_email: Entrez.email = self.pubmed_email
+        if self.pubmed_api_key: Entrez.api_key = self.pubmed_api_key
+
+        failed_statuses_to_retry = [
+            DOWNLOAD_STATUS_NO_PMCID.lower(), 
+            DOWNLOAD_STATUS_NO_PDF_LINK.lower(), 
+            DOWNLOAD_STATUS_FAILED.lower(),
+            DOWNLOAD_STATUS_HTML_CONTENT.lower(),
+            DOWNLOAD_STATUS_PMC_FORBIDDEN.lower(),
+            DOWNLOAD_STATUS_PDF_FORBIDDEN.lower(),
+            DOWNLOAD_STATUS_PENDING.lower(), # Added PENDING_DOWNLOAD to retry list
+            '' # For initial attempts on empty FullTextPath
+        ]
+        
+        papers_to_download_indices = df[
+            df['Source'].str.contains('pubmed', case=False, na=False) & 
+            (df['FullTextPath'].str.strip().str.lower().isin(failed_statuses_to_retry))
+        ].index
+
+        if papers_to_download_indices.empty:
+            logger.info("No PubMed papers in CSV require download attempt.")
+            print("No PubMed papers in the CSV require a new download attempt.")
+            if self.pubmed_email or self.pubmed_api_key: # Restore Entrez settings if they were changed
+                Entrez.email, Entrez.api_key = original_entrez_email, original_entrez_api_key
+            return
+
+        logger.info(f"Found {len(papers_to_download_indices)} PubMed papers to attempt download.")
+
+        # Create debug_pages directory if it doesn't exist
+        DEBUG_PAGES_DIR = "debug_pages"
+        if not os.path.exists(DEBUG_PAGES_DIR):
+            os.makedirs(DEBUG_PAGES_DIR)
+
+        driver = None # Initialize driver to None, will be set in the try block
         downloaded_count = 0
-
-        for index in papers_to_download_indices:
-            row = df.loc[index]
-            title = str(row.get('Title', 'N/A'))
-            link = str(row.get('Link', '')).strip()
-            pmid = None
-            
-            if not link:
-                logger.warning(f"Skipping '{title}' (Row {index+2}): No link found.")
-                df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_LINK
-                continue
-
-            match = re.search(r'pubmed\.ncbi\.nlm\.nih\.gov/(\d+)/', link)
-            if match:
-                pmid = match.group(1)
-            else:
-                logger.warning(f"Skipping '{title}' (Row {index+2}): Could not extract PMID from link: {link}")
-                df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_BAD_LINK
-                continue
-            
-            logger.info(f"Attempting download for '{title}' (PMID: {pmid}) (Row {index+2})")
-            download_status = DOWNLOAD_STATUS_FAILED # Default to failed
-            try:
-                handle = Entrez.elink(dbfrom="pubmed", id=pmid, linkname="pubmed_pmc_refs")
-                record = Entrez.read(handle)
-                handle.close()
-                
-                pmcid = None
-                if record[0]["LinkSetDb"]:
-                    pmcid_dict = record[0]["LinkSetDb"][0]["Link"][0]
-                    pmcid = pmcid_dict['Id']
-                
-                if pmcid:
-                    logger.info(f"Found PMCID: {pmcid} for PMID: {pmid}")
-                    # Attempt direct PDF download link pattern (common but not guaranteed)
-                    pdf_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/pdf/"
-                    
-                    # Some PMC articles have slightly different URL structures, this is a common one.
-                    # A more robust way involves fetching the article page and parsing for the PDF link.
-                    # For now, we try the direct link.
-                    try:
-                        response = requests.get(pdf_url, timeout=20, stream=True)
-                        response.raise_for_status() # Check for HTTP errors
-                        
-                        # Check content type, ensure it's a PDF
-                        content_type = response.headers.get('content-type', '').lower()
-                        if 'application/pdf' in content_type:
-                            file_name = f"PMID_{pmid}.pdf"
-                            file_path = os.path.join(DOWNLOAD_DIR, file_name)
-                            with open(file_path, 'wb') as f:
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                            logger.info(f"Successfully downloaded: {file_path}")
-                            download_status = file_path
-                            downloaded_count += 1
-                        else:
-                            logger.warning(f"URL for PMCID {pmcid} did not return a PDF. Content-Type: {content_type}. URL: {pdf_url}")
-                            download_status = DOWNLOAD_STATUS_NO_PDF_LINK
-                    except requests.exceptions.RequestException as req_e:
-                        logger.error(f"Failed to download from {pdf_url} for PMCID {pmcid}: {req_e}")
-                        download_status = DOWNLOAD_STATUS_FAILED
-                else:
-                    logger.info(f"No PMCID found for PMID: {pmid}")
-                    download_status = DOWNLOAD_STATUS_NO_PMCID
-            except Exception as e_entrez:
-                logger.error(f"Error fetching PMCID for PMID {pmid}: {e_entrez}")
-                download_status = DOWNLOAD_STATUS_FAILED
-            finally:
-                df.loc[index, 'FullTextPath'] = download_status
-                time.sleep(3) # Be polite to NCBI servers
         
         try:
-            df.to_csv(csv_filepath, index=False)
-            logger.info(f"Full text download attempts complete. Updated '{csv_filepath}'. Successfully downloaded {downloaded_count} files.")
-        except Exception as e:
-            logger.error(f"Error saving CSV after download attempts: {e}", exc_info=True)
+            # Initialize Selenium WebDriver ONLY if there are papers to download (which we've already checked)
+            logger.info("Attempting to initialize Selenium WebDriver...")
+            chrome_options = Options()
+            chrome_options.add_argument("--headless") # INTENTIONALLY COMMENTED OUT FOR STEP 2
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            chrome_options.add_experimental_option("prefs", {
+                "download.default_directory": os.path.abspath(DOWNLOAD_DIR),
+                "download.prompt_for_download": False,
+                "download.directory_upgrade": True,
+                "plugins.always_open_pdf_externally": True
+            })
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+            logger.info("Selenium WebDriver initialized successfully.")
+
+            # ##### START OF ACTUAL DOWNLOAD LOOP #####
+            for index in papers_to_download_indices:
+                row = df.loc[index]
+                pmid_from_csv = ""
+                link = row.get('Link', "")
+
+                if "pubmed.ncbi.nlm.nih.gov" in link:
+                    match = re.search(r'/(\d+)/?$', link) # Corrected regex for PMID from link
+                    if match: pmid_from_csv = match.group(1)
+                
+                if not pmid_from_csv:
+                    logger.warning(f"Could not extract PMID from link '{link}' for row {index}. Setting status to BAD_LINK.")
+                    df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_BAD_LINK
+                    continue
+
+                logger.info(f"Processing PMID: {pmid_from_csv} (Row {index})")
+                df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_PENDING # Mark as pending
+
+                pmcid = None
+                try:
+                    handle = Entrez.elink(dbfrom="pubmed", id=pmid_from_csv, linkname="pubmed_pmc")
+                    results = Entrez.read(handle)
+                    handle.close()
+                    if results[0]["LinkSetDb"] and results[0]["LinkSetDb"][0]["Link"]:
+                        pmcid = results[0]["LinkSetDb"][0]["Link"][0]["Id"]
+                except Exception as e_entrez:
+                    logger.error(f"Entrez error finding PMCID for {pmid_from_csv}: {e_entrez}", exc_info=True)
+                    df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_PMCID
+                    time.sleep(1) # NCBI rate limit
+                    continue
+                
+                if not pmcid:
+                    logger.warning(f"No PMCID found for PMID {pmid_from_csv}.")
+                    df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_PMCID
+                    continue
+
+                logger.info(f"Found PMCID: {pmcid} for PMID: {pmid_from_csv}")
+                article_page_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/"
+                pdf_url_to_try = None
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+
+                # Attempt 1: Selenium to find PDF link on article page
+                if driver: 
+                    try:
+                        logger.info(f"Using Selenium to navigate to: {article_page_url}")
+                        driver.get(article_page_url)
+                        
+                        pdf_link_element = None
+                        # Updated and reordered selectors
+                        selectors_to_try = [
+                            # Most specific first, based on user-provided HTML
+                            {"by": By.CSS_SELECTOR, "value": "a.usa-link[href^='pdf/'][href$='.pdf']", "condition": EC.element_to_be_clickable, "desc": "Specific USA link starting with pdf/ and ending with .pdf"},
+                            # General /pdf/ in href, good chance of matching
+                            {"by": By.CSS_SELECTOR, "value": "a[href*='/pdf/'][href$='.pdf']", "condition": EC.element_to_be_clickable, "desc": "Link with /pdf/ in href and ending .pdf"},
+                            # Class format-pdf, often used
+                            {"by": By.CSS_SELECTOR, "value": "a.format-pdf[href$='.pdf']", "condition": EC.element_to_be_clickable, "desc": "Link with class format-pdf and ending .pdf"},
+                            # Data attribute, less common but possible
+                            {"by": By.CSS_SELECTOR, "value": "a[data-format='pdf'][href]", "condition": EC.element_to_be_clickable, "desc": "Link with data-format pdf"},
+                             # Fallback: any link containing .pdf in href, ensuring it's clickable
+                            {"by": By.CSS_SELECTOR, "value": "a[href*='.pdf']", "condition": EC.element_to_be_clickable, "desc": "Any link containing .pdf in href"},
+                            # Last resort: visible text PDF, less reliable due to icons
+                            {"by": By.PARTIAL_LINK_TEXT, "value": "PDF", "condition": EC.presence_of_element_located, "desc": "Partial link text PDF"}
+                        ]
+
+                        for selector_config in selectors_to_try:
+                            by_method = selector_config["by"]
+                            selector_str = selector_config["value"]
+                            condition = selector_config["condition"]
+                            desc = selector_config["desc"]
+                            try:
+                                logger.info(f"Selenium trying selector ({desc}): {by_method} -> '{selector_str}' on {article_page_url}")
+                                wait = WebDriverWait(driver, 30) 
+                                pdf_link_element = wait.until(condition((by_method, selector_str)))
+                                if pdf_link_element and pdf_link_element.get_attribute('href'):
+                                    pdf_url_to_try = pdf_link_element.get_attribute('href')
+                                    logger.info(f"Selenium found PDF link via ({desc}): {pdf_url_to_try}")
+                                    break 
+                                else:
+                                    logger.info(f"Selector ({desc}) found element but no href or element invalid.")
+                                    pdf_link_element = None 
+                            except TimeoutException:
+                                logger.warning(f"Selenium selector timed out ({desc}): {by_method} -> '{selector_str}' on {article_page_url}")
+                            except NoSuchElementException: # Should be caught by TimeoutException with presence_of_element_located
+                                logger.warning(f"Selenium selector not found ({desc}): {by_method} -> '{selector_str}' on {article_page_url}")
+                            except Exception as e_sel_find:
+                                logger.error(f"Selenium error finding link with ({desc}) on {article_page_url}: {e_sel_find}", exc_info=True)
+                                pdf_link_element = None
+                        
+                        if not pdf_url_to_try:
+                            logger.error(f"Selenium failed to find PDF link on {article_page_url} after trying all selectors.")
+                            try:
+                                page_source_filename = os.path.join(DEBUG_PAGES_DIR, f"failed_pmc_{pmcid}_at_{int(time.time())}.html")
+                                with open(page_source_filename, "w", encoding="utf-8") as f_ps:
+                                    f_ps.write(driver.page_source)
+                                logger.info(f"Saved page source for {article_page_url} to {page_source_filename}")
+                            except Exception as e_save_ps:
+                                logger.error(f"Could not save page source for {article_page_url}: {e_save_ps}")
+
+                    except Exception as e_sel_nav:
+                        logger.error(f"General error during Selenium navigation for {article_page_url}: {e_sel_nav}", exc_info=True)
+                        # pdf_url_to_try will remain None, will fall through to requests/BeautifulSoup if necessary
+
+                # If Selenium didn't find it or wasn't available, or if the found URL is not absolute
+                if not pdf_url_to_try or not pdf_url_to_try.startswith('http'):
+                    if pdf_url_to_try: # It means Selenium found something but it wasn't a full URL
+                        logger.info(f"Selenium found relative link '{pdf_url_to_try}', attempting to make absolute.")
+                        if pdf_url_to_try.startswith('/'):
+                            base_url_parts = urlparse(article_page_url)
+                            pdf_url_to_try = f"{base_url_parts.scheme}://{base_url_parts.netloc}{pdf_url_to_try}"
+                        else: # Try joining with the article page URL as base
+                            pdf_url_to_try = urljoin(article_page_url, pdf_url_to_try)
+                        logger.info(f"Made absolute: {pdf_url_to_try}")
+
+                    if not (pdf_url_to_try and pdf_url_to_try.startswith('http')): # Still no good URL, try requests+BeautifulSoup
+                        logger.info(f"Selenium did not yield a usable PDF URL or driver failed. Falling back to requests & BeautifulSoup for {article_page_url}")
+                        try:
+                            page_response = requests.get(article_page_url, timeout=30, headers=headers)
+                            page_response.raise_for_status()
+                            soup = BeautifulSoup(page_response.content, 'html.parser')
+                            
+                            found_link_tag_bs = None
+                            bs_link_patterns = [
+                                {'class_': 'format-pdf', 'href': re.compile(r'\.pdf$', re.I)},
+                                {'href': re.compile(r'/pdf/.*\.pdf$', re.I)},
+                                {'attrs': {'data-format': 'pdf'}, 'href': True},
+                                {'string': re.compile(r'pdf', re.I), 'href': True}
+                            ]
+                            for pattern_kwargs in bs_link_patterns:
+                                link_tag = soup.find('a', **pattern_kwargs)
+                                if link_tag and link_tag.get('href'):
+                                    found_link_tag_bs = link_tag
+                                    break
+                            
+                            if found_link_tag_bs:
+                                raw_pdf_url = found_link_tag_bs['href']
+                                if raw_pdf_url.startswith('//'): 
+                                    pdf_url_to_try = f"https:{raw_pdf_url}"
+                                elif raw_pdf_url.startswith('/'):
+                                    base_url_parts = urlparse(article_page_url)
+                                    pdf_url_to_try = f"{base_url_parts.scheme}://{base_url_parts.netloc}{raw_pdf_url}"
+                                elif raw_pdf_url.startswith('http'): 
+                                    pdf_url_to_try = raw_pdf_url
+                                else: 
+                                    pdf_url_to_try = urljoin(article_page_url, raw_pdf_url)
+                                logger.info(f"BeautifulSoup found potential PDF link: {pdf_url_to_try}")
+                            else:
+                                logger.warning(f"BeautifulSoup could not find a clear PDF link on {article_page_url}")
+
+                        except requests.exceptions.HTTPError as e_http:
+                            status_to_set = DOWNLOAD_STATUS_PMC_FORBIDDEN if e_http.response.status_code == 403 else DOWNLOAD_STATUS_FAILED
+                            logger.error(f"HTTP error ({e_http.response.status_code}) fetching article page {article_page_url} with requests: {e_http}")
+                            df.loc[index, 'FullTextPath'] = status_to_set
+                            time.sleep(3) # Be respectful
+                            continue # Skip to next paper
+                        except Exception as e_bs_parse:
+                            logger.error(f"Error fetching/parsing article page {article_page_url} with BeautifulSoup: {e_bs_parse}", exc_info=True)
+                            # pdf_url_to_try remains None or its previous value from Selenium attempt
+
+                # Attempt 2: Download the PDF if a URL was found (either from Selenium or BeautifulSoup)
+                if pdf_url_to_try and pdf_url_to_try.startswith('http'):
+                    logger.info(f"Attempting to download PDF from: {pdf_url_to_try}")
+                    selenium_download_successful = False
+
+                    if driver: # Try Selenium download first
+                        try:
+                            logger.info(f"Attempting download via Selenium navigation to: {pdf_url_to_try}")
+                            files_before = set(os.listdir(os.path.abspath(DOWNLOAD_DIR)))
+                            driver.get(pdf_url_to_try)
+                            time.sleep(15) # Wait for download to likely complete
+                            files_after = set(os.listdir(os.path.abspath(DOWNLOAD_DIR)))
+                            new_files = files_after - files_before
+                            
+                            if new_files:
+                                downloaded_filename = new_files.pop()
+                                if downloaded_filename.lower().endswith('.pdf') and not downloaded_filename.lower().endswith('.crdownload'):
+                                    original_filepath = os.path.join(os.path.abspath(DOWNLOAD_DIR), downloaded_filename)
+                                    target_filename = f"PMID_{pmid_from_csv}_PMC{pmcid}.pdf"
+                                    target_filepath = os.path.join(os.path.abspath(DOWNLOAD_DIR), target_filename)
+                                    
+                                    # Handle existing target file: remove or rename before new rename
+                                    if os.path.exists(target_filepath):
+                                        if target_filepath == original_filepath: # Already named correctly, somehow
+                                            logger.info(f"Downloaded file '{original_filepath}' is already named correctly.")
+                                        else: # Target name exists, but is different from downloaded temp name
+                                            logger.warning(f"Target file {target_filepath} already exists. Removing before renaming.")
+                                            os.remove(target_filepath)
+                                    
+                                    if os.path.exists(original_filepath): # Ensure original still exists (wasn't self-renamed)
+                                       os.rename(original_filepath, target_filepath)
+                                       logger.info(f"Successfully downloaded (via Selenium) and renamed PDF to: {target_filepath}")
+                                       df.loc[index, 'FullTextPath'] = target_filepath
+                                       downloaded_count += 1
+                                       selenium_download_successful = True
+                                    else:
+                                        # This case might happen if the file was saved directly with the target name
+                                        # or if it was already target_filepath and we didn't need to rename.
+                                        if os.path.exists(target_filepath):
+                                            logger.info(f"File {target_filepath} (target name) exists after Selenium navigation. Assuming successful download.")
+                                            df.loc[index, 'FullTextPath'] = target_filepath
+                                            downloaded_count += 1
+                                            selenium_download_successful = True
+                                        else:
+                                            logger.warning(f"Original downloaded file '{original_filepath}' disappeared before rename and target '{target_filepath}' not found.")
+                                else:
+                                    logger.warning(f"New file found via Selenium nav '{downloaded_filename}', but not a PDF or still temp. Will try requests.")
+                            else:
+                                logger.warning(f"Selenium navigated to {pdf_url_to_try}, but no new file detected in download directory after 15s. Will try requests as fallback.")
+                        except Exception as e_sel_download:
+                            logger.error(f"Error during Selenium-driven download from {pdf_url_to_try}: {e_sel_download}", exc_info=True)
+                            logger.info("Falling back to requests.get() for PDF download.")
+                    
+                    if not selenium_download_successful:
+                        logger.info(f"Attempting download with requests (fallback or direct) from: {pdf_url_to_try}")
+                        try:
+                            response = requests.get(pdf_url_to_try, timeout=90, stream=True, headers=headers, allow_redirects=True)
+                            response.raise_for_status()
+                            content_type = response.headers.get('content-type', '').lower()
+
+                            if 'application/pdf' in content_type:
+                                file_name = f"PMID_{pmid_from_csv}_PMC{pmcid}.pdf"
+                                file_path = os.path.join(DOWNLOAD_DIR, file_name)
+                                if os.path.exists(file_path):
+                                     logger.warning(f"File {file_path} already exists (requests download). Overwriting.")
+                                     # os.remove(file_path) # Optional: remove before writing if overwrite is desired
+                                with open(file_path, 'wb') as f:
+                                    for chunk in response.iter_content(chunk_size=8192): f.write(chunk)
+                                logger.info(f"Successfully downloaded PDF (via requests): {file_path}")
+                                df.loc[index, 'FullTextPath'] = file_path
+                                downloaded_count += 1
+                            elif 'text/html' in content_type:
+                                logger.warning(f"URL {pdf_url_to_try} returned HTML content, not PDF. PMCID: {pmcid}.")
+                                df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_HTML_CONTENT
+                                try:
+                                    html_error_filename = os.path.join(DEBUG_PAGES_DIR, f"html_instead_of_pdf_pmc_{pmcid}_at_{int(time.time())}.html")
+                                    with open(html_error_filename, "w", encoding="utf-8") as f_html_err:
+                                        f_html_err.write(response.text)
+                                    logger.info(f"Saved unexpected HTML content from {pdf_url_to_try} to {html_error_filename}")
+                                except Exception as e_save_html:
+                                    logger.error(f"Could not save unexpected HTML content for {pdf_url_to_try}: {e_save_html}")
+                            else:
+                                logger.warning(f"URL {pdf_url_to_try} returned unexpected content-type: {content_type}. PMCID: {pmcid}")
+                                df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_FAILED
+                        except requests.exceptions.HTTPError as e_pdf_http:
+                            status_to_set = DOWNLOAD_STATUS_PDF_FORBIDDEN if e_pdf_http.response.status_code == 403 else DOWNLOAD_STATUS_FAILED
+                            logger.error(f"HTTP error ({e_pdf_http.response.status_code}) downloading PDF from {pdf_url_to_try}: {e_pdf_http}")
+                            df.loc[index, 'FullTextPath'] = status_to_set
+                        except Exception as e_pdf_download_req:
+                            logger.error(f"Failed to download PDF (via requests) from {pdf_url_to_try}: {e_pdf_download_req}", exc_info=True)
+                            df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_FAILED
+                
+                elif not pdf_url_to_try: # No URL found after all attempts (Selenium and BS)
+                    logger.warning(f"No PDF URL could be determined for PMCID {pmcid} after all attempts.")
+                    df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_PDF_LINK
+                else: # URL found but not valid http/https (e.g. relative path that couldn't be absolutized)
+                    logger.warning(f"PDF URL '{pdf_url_to_try}' is not a valid absolute HTTP/S URL. PMCID: {pmcid}")
+                    df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_PDF_LINK # Or a new status like INVALID_PDF_URL
+                
+                time.sleep(3) # Respect NCBI servers between processing each paper
+            ##### END OF ACTUAL DOWNLOAD LOOP #####
+
+        except Exception as e_selenium_or_loop:
+            logger.error(f"An error occurred during Selenium initialization or the main download loop: {e_selenium_or_loop}", exc_info=True)
+            print(f"Error during download process: {e_selenium_or_loop}. Check logs. Some papers may not have been processed.")
+            # If Selenium failed to init, driver will be None. If error in loop, driver might exist.
+        
+        finally:
+            # Save updated CSV regardless of what happened in the try block (unless CSV read failed)
+            try:
+                # Ensure all FIELDNAMES are present as columns before saving, adding them if missing
+                for col_name in self.csv_tool.FIELDNAMES:
+                    if col_name not in df.columns:
+                        df[col_name] = '' # Add missing column with empty strings
+                
+                df.to_csv(csv_filepath, index=False, header=True, columns=self.csv_tool.FIELDNAMES, quoting=csv.QUOTE_ALL)
+                logger.info(f"Updated CSV saved to {csv_filepath}. Processed/simulated {downloaded_count} papers.")
+                print(f"Finished download process. Updated '{csv_filepath}'.")
+            except Exception as e_csv_save:
+                logger.error(f"Error saving updated CSV to {csv_filepath}: {e_csv_save}", exc_info=True)
+                print(f"CRITICAL Error: Could not save updates to '{csv_filepath}'. Check logs.")
+
+            if self.pubmed_email or self.pubmed_api_key: # Restore original Entrez settings
+                Entrez.email, Entrez.api_key = original_entrez_email, original_entrez_api_key
+            
+            if driver: # Quit WebDriver if it was initialized
+                try:
+                    logger.info("Attempting to quit Selenium WebDriver...")
+                    driver.quit()
+                    logger.info("Selenium WebDriver quit successfully.")
+                except Exception as e_quit:
+                    logger.error(f"Error quitting Selenium WebDriver: {e_quit}", exc_info=True)
+            else:
+                logger.info("Selenium WebDriver was not initialized or failed to initialize, no need to quit.")
+                
+    # ... (rest of the class)
+# ... (main block, display_menu, etc.)
 
 def display_menu():
     print("\n--- PaperPulse Menu ---")
@@ -813,7 +1089,6 @@ if __name__ == "__main__":
                             if max_r <= 0: max_r = 3
                         except ValueError:
                             logger.warning("Invalid number for max results. Using default 3.")
-                            max_r = 3
                         
                         logger.info(f"Proceeding to scrape with generated queries (max_results: {max_r})...")
                         pipeline.scrape_and_save_raw_papers(search_queries=generated_queries, max_results_per_source=max_r)

@@ -35,7 +35,7 @@ class ArxivSearchTool(BaseTool):
     description: str = "A tool for searching and retrieving papers from arXiv"
     base_url: str = Field(default="http://export.arxiv.org/api/query")
     max_results: int = Field(default=5)
-
+    
     def _run(self, query: str) -> List[Dict[str, str]]:
         logger.info(f"Starting arXiv scrape for query: {query}, max_results: {self.max_results}")
         params = {
@@ -76,7 +76,7 @@ class CSVWriterTool(BaseTool):
         'Original Abstract', 'Densified Abstract', 'Keywords', 'Relevance', 'Timestamp',
         'FullTextPath'
     ]
-
+    
     def __init__(self, **data):
         super().__init__(**data)
         self._ensure_backup_dir()
@@ -98,10 +98,10 @@ class CSVWriterTool(BaseTool):
                 os.rename(self.csv_filename, backup_file)
                 logger.info(f"Created backup of existing file: {backup_file}")
                 return True
-            except Exception as e:
+        except Exception as e:
                 logger.error(f"Failed to create backup for {self.csv_filename}: {e}")
-        return False
-
+            return False
+    
     def _initialize_csv_with_headers(self):
         try:
             should_write_new = False
@@ -120,7 +120,7 @@ class CSVWriterTool(BaseTool):
                     writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
                     writer.writeheader()
                 logger.info(f"Initialized CSV file '{self.csv_filename}' with headers.")
-
+            
         except Exception as e:
             logger.error(f"Failed to initialize CSV file '{self.csv_filename}': {e}")
 
@@ -193,6 +193,6 @@ class CSVWriterTool(BaseTool):
         except Exception as e:
             logger.error(f"Error writing to CSV '{self.csv_filename}': {e}", exc_info=True)
             return False
-
+            
 # Note: GoogleScholarSearchTool and PubMedSearchTool from search_tools.py are used by ResearchPipeline
 # but their definitions are not in this file. This file focuses on Arxiv and CSV tools. 
