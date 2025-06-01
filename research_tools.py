@@ -98,9 +98,10 @@ class CSVWriterTool(BaseTool):
                 os.rename(self.csv_filename, backup_file)
                 logger.info(f"Created backup of existing file: {backup_file}")
                 return True
-        except Exception as e:
+            except Exception as e:
                 logger.error(f"Failed to create backup for {self.csv_filename}: {e}")
-            return False
+                return False
+        return False
     
     def _initialize_csv_with_headers(self):
         try:

@@ -727,6 +727,8 @@ class ResearchPipeline:
                     handle.close()
                     if results[0]["LinkSetDb"] and results[0]["LinkSetDb"][0]["Link"]:
                         pmcid = results[0]["LinkSetDb"][0]["Link"][0]["Id"]
+                    elif pmid_from_csv == "37633081": # Specific debug log for this PMID
+                        logger.warning(f"PMID 37633081: No PMCID direct link found. Raw Entrez results: {results}")
                 except Exception as e_entrez:
                     logger.error(f"Entrez error finding PMCID for {pmid_from_csv}: {e_entrez}", exc_info=True)
                     df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_PMCID
