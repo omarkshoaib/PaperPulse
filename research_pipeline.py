@@ -609,8 +609,13 @@ class ResearchPipeline:
     def download_pubmed_full_text_from_csv(self, csv_filepath: str = DEFAULT_CSV_FILE):
         logger.info(f"Starting full text download process for PubMed papers in '{csv_filepath}'")
         try:
-            # Use the FIELDNAMES from CSVWriterTool to define columns, skip the existing header
-            df = pd.read_csv(csv_filepath, dtype=str, names=self.csv_tool.FIELDNAMES, header=0).fillna('')
+            # Use FIELDNAMES to define columns, and header=None to ignore the physical header for field count determination.
+            # The first physical line (old header) will be read as data.
+            df = pd.read_csv(csv_filepath, dtype=str, names=self.csv_tool.FIELDNAMES, header=None).fillna('')
+            # If the first row read is indeed the header (e.g., Title == "Title"), skip it.
+            if not df.empty and df.iloc[0][self.csv_tool.FIELDNAMES[0]] == self.csv_tool.FIELDNAMES[0]:
+                df = df.iloc[1:].reset_index(drop=True)
+
         except FileNotFoundError:
             logger.error(f"CSV file not found: {csv_filepath}. Cannot download full texts.")
             print(f"Error: CSV file '{csv_filepath}' not found.")
