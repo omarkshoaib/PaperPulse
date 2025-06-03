@@ -13,6 +13,7 @@ from Bio import Entrez # For PubMed full text download
 from bs4 import BeautifulSoup # Added for parsing HTML
 import csv
 from urllib.parse import urljoin, urlparse # For constructing absolute URLs
+from litellm.exceptions import RateLimitError # For handling LLM rate limits
 
 # Selenium imports
 from selenium import webdriver
@@ -30,8 +31,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 
 # Default placeholder for LLM-generated fields
 PENDING_LLM_PLACEHOLDER = "PENDING_LLM_PROCESSING"
-DEFAULT_CSV_FILE = "research_results.csv"
+DEFAULT_CSV_FILE = "GCN_DAM.csv"
 DOWNLOAD_DIR = "downloaded_papers"
+
+# API Rate Limiting Configuration
+API_CALL_DELAY = int(os.getenv("API_CALL_DELAY", "60"))  # Seconds between API calls (configurable via environment variable)
+DOWNLOAD_WAIT_TIME = int(os.getenv("DOWNLOAD_WAIT_TIME", "60"))  # Seconds to wait for Selenium downloads
+
+# LLM Rate Limiting Configuration
+LLM_CALL_DELAY = int(os.getenv("LLM_CALL_DELAY", "5"))  # Seconds between LLM calls (default: 5 seconds)
+LLM_RETRY_DELAY = int(os.getenv("LLM_RETRY_DELAY", "30"))  # Seconds to wait before retrying after rate limit
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))  # Maximum number of retries for LLM calls
+
 DOWNLOAD_STATUS_NO_PMCID = "NO_PMC_ID_FOUND"
 DOWNLOAD_STATUS_NO_PDF_LINK = "NO_PDF_LINK_ON_PMC"
 DOWNLOAD_STATUS_FAILED = "DOWNLOAD_FAILED"
@@ -169,6 +180,65 @@ class ResearchPipeline:
         self.llm_initialized = True
         logger.info("LLM resources initialized successfully.")
 
+    def _safe_llm_call_with_retry(self, crew: Crew, operation_name: str) -> Any:
+        """
+        Execute LLM crew with rate limiting and retry logic.
+        
+        Args:
+            crew: The CrewAI crew to execute
+            operation_name: Human-readable name for logging
+            
+        Returns:
+            The crew result or None if all retries failed
+        """
+        for attempt in range(LLM_MAX_RETRIES + 1):
+            try:
+                if attempt > 0:
+                    retry_delay = LLM_RETRY_DELAY * (2 ** (attempt - 1))  # Exponential backoff
+                    logger.info(f"Retrying {operation_name} (attempt {attempt + 1}/{LLM_MAX_RETRIES + 1}) after {retry_delay}s delay...")
+                    time.sleep(retry_delay)
+                else:
+                    # Always add a small delay between LLM calls to be respectful
+                    time.sleep(LLM_CALL_DELAY)
+                
+                result = crew.kickoff()
+                logger.debug(f"{operation_name} completed successfully on attempt {attempt + 1}")
+                return result
+                
+            except RateLimitError as e:
+                if "quota" in str(e).lower() or "rate" in str(e).lower():
+                    if attempt < LLM_MAX_RETRIES:
+                        # Extract retry delay from error if available
+                        error_str = str(e)
+                        retry_match = re.search(r'"retryDelay":\s*"(\d+)s"', error_str)
+                        if retry_match:
+                            suggested_delay = int(retry_match.group(1))
+                            retry_delay = max(suggested_delay, LLM_RETRY_DELAY)
+                        else:
+                            retry_delay = LLM_RETRY_DELAY * (2 ** attempt)  # Exponential backoff
+                        
+                        logger.warning(f"{operation_name} hit rate limit on attempt {attempt + 1}. Waiting {retry_delay}s before retry...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error(f"{operation_name} failed after {LLM_MAX_RETRIES + 1} attempts due to rate limiting: {e}")
+                        return None
+                else:
+                    logger.error(f"{operation_name} failed with non-recoverable rate limit error: {e}")
+                    return None
+                    
+            except Exception as e:
+                if attempt < LLM_MAX_RETRIES:
+                    retry_delay = LLM_RETRY_DELAY * (2 ** attempt)
+                    logger.warning(f"{operation_name} failed on attempt {attempt + 1} with error: {e}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"{operation_name} failed after {LLM_MAX_RETRIES + 1} attempts: {e}", exc_info=True)
+                    return None
+        
+        return None
+
     def generate_search_queries(self, project_description: str) -> List[str]:
         self._initialize_llm_resources() 
         if not self.llm_initialized or not self.query_generation_agent:
@@ -193,12 +263,7 @@ class ResearchPipeline:
         )
 
         query_crew = Crew(agents=[self.query_generation_agent], tasks=[query_gen_task], verbose=False)
-        crew_result_obj = None
-        try:
-            crew_result_obj = query_crew.kickoff()
-        except Exception as e:
-            logger.error(f"Error during query generation crew kickoff: {e}", exc_info=True)
-            return [] # Return empty on crew error
+        crew_result_obj = self._safe_llm_call_with_retry(query_crew, "Query Generation")
 
         generated_queries: List[str] = []
         if crew_result_obj and hasattr(crew_result_obj, 'raw') and crew_result_obj.raw:
@@ -410,12 +475,16 @@ class ResearchPipeline:
             )
             
             summary_crew = Crew(agents=[self.summarizer_agent], tasks=[summarize_task], verbose=False)
-            summary_result_obj = summary_crew.kickoff()
+            summary_result_obj = self._safe_llm_call_with_retry(summary_crew, "Summarization")
 
             densified_abstract_val = "ERROR_SUMMARIZING"
             keywords_str_val = "ERROR_SUMMARIZING"
 
-            if summary_result_obj and hasattr(summary_result_obj, 'raw') and summary_result_obj.raw:
+            if summary_result_obj is None:
+                logger.error(f"Summarization failed for '{title}' after all retry attempts.")
+                densified_abstract_val = "FAILED_AFTER_RETRIES"
+                keywords_str_val = "FAILED_AFTER_RETRIES"
+            elif summary_result_obj and hasattr(summary_result_obj, 'raw') and summary_result_obj.raw:
                 try:
                     # Attempt to extract JSON from potentially messy LLM output
                     raw_output = summary_result_obj.raw
@@ -444,7 +513,7 @@ class ResearchPipeline:
             
             # Validation Task
             relevance_val = "ERROR_VALIDATING"
-            if densified_abstract_val not in ["ERROR_SUMMARIZING", "ERROR_PARSING_SUMMARY", "ERROR_NO_JSON_IN_SUMMARY_OUTPUT", "SKIPPED_EMPTY_ABSTRACT"]:
+            if densified_abstract_val not in ["ERROR_SUMMARIZING", "ERROR_PARSING_SUMMARY", "ERROR_NO_JSON_IN_SUMMARY_OUTPUT", "SKIPPED_EMPTY_ABSTRACT", "FAILED_AFTER_RETRIES"]:
                 validation_task_desc = (
                     f"Critically evaluate if the research paper is relevant to the project description: '{project_description}'.\n"
                     f"Paper Details:\nTitle: {title}\nSummary: {densified_abstract_val}\nKeywords: {keywords_str_val}\n"
@@ -456,9 +525,12 @@ class ResearchPipeline:
                     expected_output="A single word: 'RELEVANT' or 'NOT RELEVANT'."
                 )
                 validation_crew = Crew(agents=[self.validator_agent], tasks=[validation_task], verbose=False)
-                validation_result_obj = validation_crew.kickoff()
+                validation_result_obj = self._safe_llm_call_with_retry(validation_crew, "Validation")
                 
-                if validation_result_obj and hasattr(validation_result_obj, 'raw') and validation_result_obj.raw:
+                if validation_result_obj is None:
+                    logger.error(f"Validation failed for '{title}' after all retry attempts.")
+                    relevance_val = "FAILED_AFTER_RETRIES"
+                elif validation_result_obj and hasattr(validation_result_obj, 'raw') and validation_result_obj.raw:
                     relevance_val = str(validation_result_obj.raw).strip().upper()
                     if relevance_val not in ["RELEVANT", "NOT RELEVANT"]:
                         logger.warning(f"Unexpected validation output for '{title}': '{relevance_val}'. Marking as PENDING_REVIEW.")
@@ -732,7 +804,7 @@ class ResearchPipeline:
                 except Exception as e_entrez:
                     logger.error(f"Entrez error finding PMCID for {pmid_from_csv}: {e_entrez}", exc_info=True)
                     df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_PMCID
-                    time.sleep(1) # NCBI rate limit
+                    time.sleep(API_CALL_DELAY) # NCBI rate limit
                     continue
                 
                 if not pmcid:
@@ -856,7 +928,7 @@ class ResearchPipeline:
                             status_to_set = DOWNLOAD_STATUS_PMC_FORBIDDEN if e_http.response.status_code == 403 else DOWNLOAD_STATUS_FAILED
                             logger.error(f"HTTP error ({e_http.response.status_code}) fetching article page {article_page_url} with requests: {e_http}")
                             df.loc[index, 'FullTextPath'] = status_to_set
-                            time.sleep(3) # Be respectful
+                            time.sleep(API_CALL_DELAY) # Be respectful
                             continue # Skip to next paper
                         except Exception as e_bs_parse:
                             logger.error(f"Error fetching/parsing article page {article_page_url} with BeautifulSoup: {e_bs_parse}", exc_info=True)
@@ -872,7 +944,7 @@ class ResearchPipeline:
                             logger.info(f"Attempting download via Selenium navigation to: {pdf_url_to_try}")
                             files_before = set(os.listdir(os.path.abspath(DOWNLOAD_DIR)))
                             driver.get(pdf_url_to_try)
-                            time.sleep(15) # Wait for download to likely complete
+                            time.sleep(DOWNLOAD_WAIT_TIME) # Wait for download to likely complete
                             files_after = set(os.listdir(os.path.abspath(DOWNLOAD_DIR)))
                             new_files = files_after - files_before
                             
@@ -961,7 +1033,7 @@ class ResearchPipeline:
                     logger.warning(f"PDF URL '{pdf_url_to_try}' is not a valid absolute HTTP/S URL. PMCID: {pmcid}")
                     df.loc[index, 'FullTextPath'] = DOWNLOAD_STATUS_NO_PDF_LINK # Or a new status like INVALID_PDF_URL
                 
-                time.sleep(3) # Respect NCBI servers between processing each paper
+                time.sleep(API_CALL_DELAY) # Respect NCBI servers between processing each paper
             ##### END OF ACTUAL DOWNLOAD LOOP #####
 
         except Exception as e_selenium_or_loop:

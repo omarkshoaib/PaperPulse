@@ -12,6 +12,9 @@ from datetime import datetime
 from pydantic import Field
 import re
 
+# API Rate Limiting Configuration (matches research_pipeline.py)
+API_CALL_DELAY = int(os.getenv("API_CALL_DELAY", "60"))  # Seconds between API calls
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,7 +93,7 @@ class PubMedSearchTool(BaseTool):
                 logger.info(f"Scraped from PubMed: {paper_entry['title']}")
             except Exception as e:
                 logger.error(f"Error processing PubMed record: {e}", exc_info=True)
-            time.sleep(1)
+            time.sleep(API_CALL_DELAY)
         
         logger.info(f"Total papers scraped from PubMed: {len(papers)}")
         return papers
@@ -139,7 +142,7 @@ class GoogleScholarSearchTool(BaseTool):
                     count += 1
                 except Exception as e_paper:
                     logger.error(f"Error processing a Google Scholar paper entry for query '{query}': {e_paper}", exc_info=True)
-                time.sleep(2)
+                time.sleep(API_CALL_DELAY)
             
         except Exception as e_search:
             logger.error(f"Error during Google Scholar search for query '{query}': {e_search}", exc_info=True)

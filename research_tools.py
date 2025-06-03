@@ -9,6 +9,9 @@ from pydantic import Field, BaseModel, validator
 from datetime import datetime
 import time
 
+# API Rate Limiting Configuration (matches research_pipeline.py)  
+API_CALL_DELAY = int(os.getenv("API_CALL_DELAY", "60"))  # Seconds between API calls
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -60,7 +63,7 @@ class ArxivSearchTool(BaseTool):
             }
             logger.info(f"Scraped paper: {paper['title']} ({paper['link']})")
             papers.append(paper)
-            time.sleep(2)
+            time.sleep(API_CALL_DELAY)
         logger.info(f"Total papers scraped from arXiv: {len(papers)}")
         
         return papers
