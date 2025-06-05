@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup # Added for parsing HTML
 import csv
 from urllib.parse import urljoin, urlparse # For constructing absolute URLs
 from litellm.exceptions import RateLimitError # For handling LLM rate limits
+from dotenv import load_dotenv # Add this import
 
 # Selenium imports
 from selenium import webdriver
@@ -31,12 +32,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 
 # Default placeholder for LLM-generated fields
 PENDING_LLM_PLACEHOLDER = "PENDING_LLM_PROCESSING"
-DEFAULT_CSV_FILE = "GCN_DAM.csv"
+DEFAULT_CSV_FILE = "GCN_DAM_2.csv"
 DOWNLOAD_DIR = "downloaded_papers"
 
 # API Rate Limiting Configuration
-API_CALL_DELAY = int(os.getenv("API_CALL_DELAY", "60"))  # Seconds between API calls (configurable via environment variable)
-DOWNLOAD_WAIT_TIME = int(os.getenv("DOWNLOAD_WAIT_TIME", "60"))  # Seconds to wait for Selenium downloads
+API_CALL_DELAY = int(os.getenv("API_CALL_DELAY", "90"))  # Seconds between API calls
+DOWNLOAD_WAIT_TIME = int(os.getenv("DOWNLOAD_WAIT_TIME", "90"))  # Seconds to wait for Selenium downloads
 
 # LLM Rate Limiting Configuration
 LLM_CALL_DELAY = int(os.getenv("LLM_CALL_DELAY", "5"))  # Seconds between LLM calls (default: 5 seconds)
@@ -74,17 +75,19 @@ class ResearchPipeline:
         self.llm_initialized = False
 
         # Tools for scraping (always initialized)
-        self.pubmed_email = pubmed_email
-        self.pubmed_api_key = pubmed_api_key
+        self.pubmed_email = pubmed_email # Set from constructor argument
+        self.pubmed_api_key = pubmed_api_key # Set from constructor argument
         self.arxiv_tool = ArxivSearchTool() 
         # Ensure CSVWriterTool in research_tools.py can accept csv_filename or has a default
         self.csv_tool = CSVWriterTool(csv_filename=DEFAULT_CSV_FILE) 
 
         try:
             from search_tools import PubMedSearchTool, GoogleScholarSearchTool, deduplicate_results
+            # PubMedSearchTool will now use the email and api_key passed to ResearchPipeline,
+            # which are sourced from .env/environment in the main block.
             self.pubmed_tool = PubMedSearchTool(
-                email=self.pubmed_email if self.pubmed_email else os.getenv("PUBMED_EMAIL", "omarkshoaib@gmail.com"),
-                api_key=self.pubmed_api_key if self.pubmed_api_key else os.getenv("PUBMED_API_KEY", "e8a81a517e5bf4934d54d0d854b1dcd0b408")
+                email=self.pubmed_email, # Uses the value from the constructor
+                api_key=self.pubmed_api_key # Uses the value from the constructor
             )
             self.google_scholar_tool = GoogleScholarSearchTool()
             self.deduplicate_results_func = deduplicate_results
@@ -174,7 +177,7 @@ class ResearchPipeline:
         self.query_generation_agent = Agent( # New Agent
             role="Scientific Query Generator",
             goal="Generate a list of 3-5 diverse and effective search query strings for academic paper databases (like arXiv, PubMed, Google Scholar) based on a given research project description. The queries should be targeted to find relevant literature.",
-            backstory="You are an AI assistant skilled in understanding research topics and formulating precise search queries to retrieve relevant scientific papers. Your response MUST be a single valid JSON array of strings (e.g., [\"query 1\", \"query 2\", \"query 3\"]).",
+            backstory="You are an AI assistant skilled in understanding research topics and formulating precise search queries to retrieve relevant scientific papers. Your response MUST be a single valid JSON array of strings (e.g., [\"query 1\", \"query 2\", \"query 3\"]). The queries should be from different points of view and not just the same keywords and the queries shouldn't have any stop words.",
             verbose=True, allow_delegation=False, llm=self.local_llm
         )
         self.llm_initialized = True
@@ -1084,15 +1087,19 @@ def display_menu():
     return choice
 
 if __name__ == "__main__":
+    load_dotenv() # Load .env file at the start
+
     # --- Configuration for LLM (if used in Option 2) ---
     # These will be dynamically assigned to the pipeline instance if LLM processing is chosen.
+    # os.getenv will now first check actual env vars, then those loaded from .env, then use default.
     DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "gemini") 
     DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "gemini-1.5-flash-latest")
     DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     
     # Configuration for Scraping (always used for Option 1, and PubMed details for pipeline init)
-    USER_PUBMED_EMAIL = os.getenv("PUBMED_EMAIL", "omarkshoaib@gmail.com")
-    USER_PUBMED_API_KEY = os.getenv("PUBMED_API_KEY") 
+    # These will now be read from .env if present, or fallback to defaults/None
+    USER_PUBMED_EMAIL = os.getenv("PUBMED_EMAIL", "omarkshoaib@gmail.com") # Default if not in env/.env
+    USER_PUBMED_API_KEY = os.getenv("PUBMED_API_KEY") # Will be None if not in env/.env
     
     # Default project description for Option 2 if user doesn't provide one
     DEFAULT_PROJECT_DESC_FOR_LLM = "Evaluate advancements in AI for scientific research automation."
