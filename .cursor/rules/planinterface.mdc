@@ -1,0 +1,212 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Excellent! Let me create a comprehensive plan to enhance the Gradio interface to match and exceed the terminal menu's functionality while making it more user-friendly.
+
+## **Enhancement Plan for PaperPulse Gradio Interface**
+
+### **Phase 1: Missing Core Features**
+**Current Gaps to Address:**
+
+1. **Manual Query Input** (missing Terminal Option 1)
+   - Add dedicated tab for entering custom search queries
+   - Support multiple queries (comma-separated or list format)
+   - Preview generated queries before execution
+
+2. **Separated Scrape vs. Process Workflows** (missing Terminal Option 0 flexibility)
+   - Split "Generate & Scrape" into two separate operations
+   - Allow scraping without immediate LLM processing
+   - Add workflow control buttons
+
+### **Phase 2: Enhanced UI/UX Features**
+
+3. **Real-time Progress Monitoring**
+   - Progress bars for long operations
+   - Live status updates during scraping
+   - Per-source progress tracking (arXiv, PubMed, Google Scholar)
+   - Estimated time remaining
+
+4. **CSV Management & Visualization**
+   - Interactive CSV viewer/editor
+   - Export functionality (download CSV, filtered results)
+   - Column filtering and sorting
+   - Search within results
+   - Statistics dashboard (papers per source, relevance distribution)
+
+5. **Configuration Management**
+   - Settings tab for API keys, rate limits, file paths
+   - LLM provider switching without restart
+   - Save/load configuration profiles
+
+### **Phase 3: Advanced Features**
+
+6. **Enhanced File Management**
+   - File browser for downloaded PDFs
+   - Bulk file operations
+   - Preview PDFs in interface
+   - File organization tools
+
+7. **Workflow Automation**
+   - Scheduled scraping
+   - Batch processing queue
+   - Resume interrupted operations
+   - Workflow templates
+
+8. **Analytics & Insights**
+   - Research trend analysis
+   - Source comparison metrics
+   - Keyword frequency analysis
+   - Citation network visualization
+
+### **Detailed Implementation Plan**
+
+#### **Tab Structure Redesign:**
+
+```
+📊 Dashboard
+├── Overview stats
+├── Recent activity
+└── Quick actions
+
+🔍 Query Management
+├── Generate Queries (AI-powered)
+├── Manual Queries
+└── Query History
+
+📥 Data Collection
+├── Scrape Papers
+├── Import from Identifiers
+└── Batch Operations
+
+🤖 LLM Processing
+├── Summarize & Validate
+├── Batch Processing
+└── Processing Queue
+
+📚 Library Management
+├── Browse Papers
+├── Search & Filter
+└── Export Tools
+
+📄 Full Text
+├── Download PDFs
+├── File Browser
+└── Document Viewer
+⚙️ Settings
+├── API Configuration
+├── Rate Limits
+└── File Paths
+```
+
+#### **Specific UI Improvements:**
+
+1. **Dashboard Tab**
+   ```
+   - Total papers collected
+   - Papers by source (pie chart)
+   - Recent activity timeline
+   - Quick action buttons
+   - System status indicators
+   ```
+
+2. **Enhanced Query Management**
+   ```
+   - Project description → AI query generation
+   - Manual query input with validation
+   - Query preview and editing
+   - Save/load query sets
+   - Query performance analytics
+   ```
+
+3. **Smart Data Collection**
+   ```
+   - Source selection checkboxes
+   - Real-time progress bars
+   - Pause/resume functionality
+   - Error recovery options
+   - Results preview during scraping
+   ```
+
+4. **Interactive CSV Management**
+   ```
+   - Sortable/filterable table
+   - Column customization
+   - Row selection for batch operations
+   - Export filtered results
+   - Inline editing capabilities
+   ```
+
+5. **Advanced Processing Queue**
+   ```
+   - Queue management for LLM operations
+   - Retry failed operations
+   - Batch processing controls
+   - Processing history
+   - Custom processing rules
+   ```
+
+#### **Technical Enhancements:**
+
+1. **State Management**
+   ```python
+   - Persistent application state
+   - Session management
+   - Operation history
+   - Auto-save functionality
+   ```
+
+2. **Background Processing**
+   ```python
+   - Async operations for long tasks
+   - WebSocket for real-time updates
+   - Progress callbacks
+   - Cancellation support
+   ```
+
+3. **Error Handling**
+   ```python
+   - User-friendly error messages
+   - Automatic retry mechanisms
+   - Error logging and reporting
+   - Recovery suggestions
+   ```
+
+4. **Performance Optimization**
+   ```python
+   - Lazy loading for large datasets
+   - Caching for repeated operations
+   - Efficient data structures
+   - Memory management
+   ```
+
+### **Implementation Priority:**
+
+**🚀 Phase 1 (Immediate - 1-2 weeks)**
+- Add Manual Query Input tab
+- Separate scrape-only operation
+- Basic CSV viewer with filtering
+- Improved status messaging
+
+**📈 Phase 2 (Short-term - 2-4 weeks)**
+- Real-time progress tracking
+- Configuration management
+- Export/download capabilities
+- Enhanced error handling
+
+**🎯 Phase 3 (Medium-term - 1-2 months)**
+- Analytics dashboard
+- Workflow automation
+- Advanced file management
+- Performance optimizations
+
+### **Specific Features to Add First:**
+
+1. **Manual Query Tab** - Most critical missing feature
+2. **CSV Export/Download** - Essential for data analysis
+3. **Progress Indicators** - Improves user experience significantly
+4. **Configuration UI** - Reduces setup complexity
+5. **Better Error Display** - Critical for troubleshooting
+
+Would you like me to start implementing any specific part of this plan? I'd recommend beginning with the Manual Query Input tab and CSV management features, as these would immediately improve the interface's usability and feature parity with the terminal version.

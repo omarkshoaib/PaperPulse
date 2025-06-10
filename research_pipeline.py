@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 
 # Default placeholder for LLM-generated fields
 PENDING_LLM_PLACEHOLDER = "PENDING_LLM_PROCESSING"
-DEFAULT_CSV_FILE = "GCN_DAM_2.csv"
+DEFAULT_CSV_FILE = "GCN_DAM_3.csv"
 DOWNLOAD_DIR = "downloaded_papers"
 
 # API Rate Limiting Configuration
