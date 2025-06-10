@@ -1,155 +1,305 @@
-# PaperPulse 📚
+# 🔬 PaperPulse: AI-Powered Research Automation
 
-An intelligent research paper scraping and analysis tool that helps researchers stay up-to-date with the latest academic publications across multiple sources.
+> **Streamline your academic literature discovery and analysis with intelligent automation**
 
-## Core Functionality
+PaperPulse is a powerful research automation tool that helps researchers efficiently discover, collect, process, and analyze academic papers from multiple sources using AI-powered workflows.
 
-PaperPulse is a command-line tool that offers a multi-step process for managing research papers:
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Gradio](https://img.shields.io/badge/Interface-Gradio-orange.svg)](https://gradio.app)
 
-1.  **Query Generation (Optional):**
-    *   Users can provide a project description.
-    *   An LLM generates a list of relevant search queries.
-    *   Users can then choose to proceed with scraping using these queries.
+## 🌟 Key Features
 
-2.  **Multi-Source Scraping:**
-    *   Scrapes arXiv, PubMed, and Google Scholar using the generated or manually provided queries.
-    *   Can also scrape papers based on a list of PMIDs/DOIs from an input CSV file.
-    *   Collects metadata including title, link, authors, year, source, and original abstract.
-    *   Deduplicates results based on paper links and titles.
+### 🔍 **Multi-Source Paper Discovery**
+- **arXiv**: Preprints and open-access papers
+- **PubMed**: Biomedical and life science literature
+- **Google Scholar**: Broad academic coverage across disciplines
 
-3.  **Raw Data Storage:**
-    *   Saves the raw scraped data (including original abstracts and all metadata) to a CSV file (`research_results.csv`).
-    *   LLM-dependent fields (densified abstract, keywords, relevance) are initially filled with a placeholder.
+### 🤖 **AI-Powered Processing**
+- **Smart Query Generation**: AI creates optimized search queries from project descriptions
+- **Intelligent Summarization**: Chain of Density technique for concise, information-rich abstracts
+- **Keyword Extraction**: Automatic identification of 3-5 most relevant keywords
+- **Relevance Assessment**: AI determines paper relevance to your research project
 
-4.  **LLM-Powered Processing (Optional):**
-    *   Reads the `research_results.csv`.
-    *   For papers needing processing:
-        *   **Summarization:** Uses an LLM (e.g., Gemini, Ollama, Hugging Face) to create a dense summary of the original abstract (Chain of Density technique).
-        *   **Keyword Extraction:** Extracts 3-5 relevant keywords from the abstract.
-        *   **Relevance Validation:** Evaluates if the paper is relevant to a given project description based on its title, summary, and keywords, marking it as 'RELEVANT' or 'NOT RELEVANT'.
-    *   Updates the CSV file with the LLM-generated content.
+### 🖥️ **Dual Interface Options**
+- **🌐 Web Interface**: Modern, user-friendly Gradio-based GUI
+- **💻 Terminal Interface**: Command-line menu for advanced users
 
-5.  **Full-Text Download (PubMed - In Progress):**
-    *   Reads `research_results.csv` and attempts to download full-text PDFs for PubMed entries that have a PMCID.
-    *   Utilizes `Bio.Entrez` to find PMCIDs from PMIDs.
-    *   Employs Selenium to navigate PMC article pages and trigger PDF downloads, aiming to handle JavaScript-based download challenges (e.g., Proof of Work).
-    *   Saves downloaded PDFs to the `downloaded_papers` directory and updates the CSV with the file path.
-    *   **Current Status:** This feature is under active development. While it can successfully download some papers, it may fail for others due to:
-        *   Papers not having a PMCID (i.e., not available in PubMed Central).
-        *   Complexities in PDF link detection on some publisher sites or PMC layouts.
-        *   Anti-scraping measures or CAPTCHAs that Selenium cannot bypass for all cases.
-        *   Inconsistent availability of PDF links even when a PMCID exists.
+### 📊 **Advanced Data Management**
+- **Interactive Filtering**: Sort and filter by source, relevance, keywords
+- **Export Capabilities**: Download filtered results as CSV
+- **Real-time Statistics**: Track collection progress and database stats
+- **PDF Management**: Automatic full-text download for supported papers
 
-## Features Summary
+## 🚀 Quick Start
 
-- 🔍 **Multi-Source Scraping:** arXiv, Google Scholar, PubMed.
-- 📝 **LLM-Powered Summarization:** Chain of Density for concise abstracts.
-- 🔑 **Keyword Extraction:** Identifies key terms.
-- ✅ **Relevance Validation:** Assesses paper relevance against a project description.
-- 📊 **CSV Export:** Manages all data, including LLM outputs and download paths.
-- 🤖 **Flexible LLM Support:** Ollama (local), Google Gemini, Hugging Face.
-- 📥 **Targeted Scraping:** From user queries or PMID/DOI lists.
-- 📄 **Full-Text Download (PubMed):** Attempts to retrieve PDFs for PubMed articles via PMC (experimental, see status above).
-- ⚙️ **Terminal Interface:** Menu-driven operation for ease of use.
+### 1. **Installation**
 
-## Setup
+```bash
+# Clone the repository
+git clone https://github.com/your-username/PaperPulse.git
+cd PaperPulse
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository_url>
-    cd PaperPulse
-    ```
+# Create and activate conda environment (recommended)
+conda create -n research_env python=3.9
+conda activate research_env
 
-2.  **Create and activate a conda environment (recommended):**
-    ```bash
-    conda create -n research_env python=3.9 # Or your preferred Python version
-    conda activate research_env
-    ```
+# Install dependencies
+pip install -r requirements.txt
+```
 
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-    *(Ensure `requirements.txt` includes `crewai`, `requests`, `beautifulsoup4`, `pandas`, `biopython`, `selenium`, `webdriver-manager`, `lxml`, `scholarly`)*
+### 2. **Configuration**
 
-4.  **Set up Environment Variables:**
-    *   **For Google Gemini:**
-        ```bash
-        export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
-        ```
-    *   **For Hugging Face:**
-        ```bash
-        export HF_TOKEN="YOUR_HUGGINGFACE_TOKEN"
-        ```
-    *   **For PubMed E-utilities (Optional but Recommended):**
-        ```bash
-        export PUBMED_EMAIL="your_email@example.com" 
-        # export PUBMED_API_KEY="your_pubmed_api_key" # If you have one
-        ```
-        *If not set, defaults will be used, but providing your email is good practice for NCBI services.*
+Create a `.env` file in the project root with your API keys:
 
-5.  **Ollama Setup (if using Ollama as LLM provider):**
-    *   Install Ollama: [https://ollama.ai/download](https://ollama.ai/download)
-    *   Pull your desired model, e.g.:
-        ```bash
-        ollama pull llama3.1:8b
-        ```
-    *   Ensure the Ollama server is running when you use it:
-        ```bash
-        ollama serve
-        ```
+```env
+# Required for AI features
+GEMINI_API_KEY=your_gemini_api_key_here
 
-## Usage
+# Required for PubMed access
+PUBMED_EMAIL=your_email@example.com
+PUBMED_API_KEY=your_pubmed_api_key_here
 
-Run the main pipeline script from the terminal:
+# Optional: Rate limiting (default: 90 seconds)
+API_CALL_DELAY=90
+DOWNLOAD_WAIT_TIME=90
 
+# Optional: LLM provider defaults
+DEFAULT_LLM_PROVIDER=gemini
+DEFAULT_LLM_MODEL=gemini-1.5-flash-latest
+```
+
+### 3. **Launch the Interface**
+
+#### 🌐 **Web Interface** (Recommended)
+```bash
+python app.py
+```
+Then open http://127.0.0.1:7860 in your browser
+
+#### 💻 **Terminal Interface**
 ```bash
 python research_pipeline.py
 ```
 
-This will present a menu with the following options:
+## 📖 Complete Usage Guide
 
-**Menu Options:**
+### 🌐 **Web Interface Workflow**
 
-*   **0. Generate Search Queries from Project Description:**
-    *   Input: Project description, LLM provider/model details.
-    *   Output: List of search queries.
-    *   Action: Prompts to either scrape with these queries (raw or full process) or return to menu.
-*   **1. Scrape New Papers (Manual Queries):**
-    *   Input: Comma-separated search queries, max results per source.
-    *   Output: Populates `research_results.csv` with raw scraped data.
-*   **2. Process Scraped Papers with LLM (Summarize & Validate):**
-    *   Input: LLM provider/model details, project description (for validation).
-    *   Action: Reads `research_results.csv`, processes entries marked `PENDING_LLM_PROCESSING` for summarization, keyword extraction, and relevance validation. Updates the CSV.
-*   **3. Scrape Papers from Input CSV (using PMID/DOI):**
-    *   Input: Path to a CSV file containing PMID and/or DOI columns.
-    *   Action: Attempts to fetch paper details for each identifier and adds them to `research_results.csv`.
-*   **4. Download Full Text for PubMed Papers in CSV:**
-    *   Action: Reads `research_results.csv`, attempts to download full-text PDFs for PubMed entries.
-    *   Output: Saves PDFs to `downloaded_papers/` and updates `FullTextPath` in the CSV.
-    *   *Note: This feature is experimental and may not succeed for all papers.*
-*   **5. Exit:**
-    *   Terminates the program.
+#### **Step 1: Dashboard Overview**
+- View database statistics and recent papers
+- Monitor collection progress
+- Quick access to all features
 
-## File Structure
+#### **Step 2: Generate Search Queries**
+1. Navigate to **🔍 Generate Queries** tab
+2. Enter your research project description
+3. Configure LLM settings (Gemini, Ollama, or HuggingFace)
+4. Click **Generate Search Queries**
+5. Review and copy generated queries
 
-- `research_pipeline.py`: Main executable script with the `ResearchPipeline` class and CLI menu.
-- `research_tools.py`: Contains `BaseTool` implementations for arXiv scraping (`ArxivSearchTool`) and CSV writing (`CSVWriterTool`). Defines the `PaperData` Pydantic model.
-- `search_tools.py`: Contains `BaseTool` implementations for PubMed (`PubMedSearchTool`) and Google Scholar (`GoogleScholarSearchTool`), and the `deduplicate_results` function.
-- `requirements.txt`: Lists project dependencies.
-- `research_results.csv`: Default output file for scraped and processed paper data.
-- `downloaded_papers/`: Directory where downloaded PDF full texts are stored.
-- `debug_pages/`: Directory where HTML source of problematic PMC pages might be saved for debugging downloads.
-- `backups/`: Directory where backups of `research_results.csv` are stored before certain operations.
+#### **Step 3: Collect Papers**
+1. Go to **📥 Manual Scraping** tab
+2. Paste generated queries or enter your own
+3. Select sources (arXiv, PubMed, Google Scholar)
+4. Set max results per source
+5. Click **Start Scraping**
 
-## Contributing
+#### **Step 4: AI Processing**
+1. Navigate to **🤖 LLM Processing** tab
+2. Enter your project description for validation
+3. Configure LLM settings
+4. Click **Start LLM Processing**
 
-1.  Fork the repository.
-2.  Create your feature branch (`git checkout -b feature/your-amazing-feature`).
-3.  Commit your changes (`git commit -m 'Add some amazing feature'`).
-4.  Push to the branch (`git push origin feature/your-amazing-feature`).
-5.  Open a Pull Request.
+#### **Step 5: Manage Your Library**
+1. Use **📚 Library Manager** tab to:
+   - Filter by source, relevance, keywords
+   - Search within titles, authors, abstracts
+   - Export filtered results as CSV
+   - Browse and organize your collection
 
-## License
+#### **Step 6: Download Full Texts**
+1. Go to **📄 Full Text** tab
+2. Click **Start Downloading PubMed PDFs**
+3. Monitor download progress
+4. Access files in the **Document Browser**
 
-This project is licensed under the MIT License - see the `LICENSE` file for details. 
+### 💻 **Terminal Interface Options**
+
+```
+--- PaperPulse Menu ---
+0. Generate Search Queries from Project Description
+1. Scrape New Papers (Manual Queries)
+2. Process Scraped Papers with LLM (Summarize & Validate)
+3. Scrape Papers from Input CSV (using PMID/DOI)
+4. Download Full Text for PubMed Papers in CSV
+5. Exit
+```
+
+## 🔧 Advanced Configuration
+
+### **LLM Providers Setup**
+
+#### **Google Gemini** (Recommended)
+```bash
+# Get API key from: https://makersuite.google.com/app/apikey
+export GEMINI_API_KEY="your_api_key_here"
+```
+
+#### **Ollama** (Local LLM)
+```bash
+# Install Ollama: https://ollama.ai/download
+ollama pull llama3.1:8b  # or your preferred model
+ollama serve  # Start the server
+```
+
+#### **HuggingFace**
+```bash
+# Get token from: https://huggingface.co/settings/tokens
+export HF_TOKEN="your_token_here"
+```
+
+### **PubMed API Setup**
+1. Register at: https://www.ncbi.nlm.nih.gov/account/
+2. Get API key from: https://www.ncbi.nlm.nih.gov/account/settings/
+3. Add to your `.env` file
+
+### **Rate Limiting Configuration**
+```env
+# Adjust based on your API limits and needs
+API_CALL_DELAY=90          # Seconds between API calls
+DOWNLOAD_WAIT_TIME=90      # Seconds for download operations
+LLM_CALL_DELAY=5          # Seconds between LLM calls
+LLM_RETRY_DELAY=30        # Retry delay after rate limits
+LLM_MAX_RETRIES=3         # Max retry attempts
+```
+
+## 📁 Project Structure
+
+```
+PaperPulse/
+├── app.py                 # Gradio web interface
+├── research_pipeline.py   # Terminal interface & core logic
+├── research_tools.py      # arXiv scraping & CSV tools
+├── search_tools.py        # PubMed & Google Scholar tools
+├── .env                   # Configuration file (create this)
+├── requirements.txt       # Python dependencies
+├── GCN_DAM_2.csv         # Default output database
+├── downloaded_papers/     # PDF storage directory
+└── README.md             # This file
+```
+
+## 📊 Output Files
+
+### **Main Database CSV**
+- **Filename**: `GCN_DAM_2.csv` (or custom name)
+- **Columns**: Title, Link, Authors, Year, Source, Original Abstract, Densified Abstract, Keywords, Relevance, Timestamp, FullTextPath
+
+### **Downloaded PDFs**
+- **Location**: `downloaded_papers/` directory
+- **Naming**: Organized by paper title and source
+- **Formats**: PDF files with full-text content
+
+### **Export Files**
+- **Location**: Project root directory
+- **Format**: `paperpulse_export_YYYYMMDD_HHMMSS.csv`
+- **Content**: Filtered results based on your criteria
+
+## 🔍 Example Research Workflows
+
+### **Academic Literature Review**
+1. **Generate queries** from your research proposal
+2. **Scrape all sources** for comprehensive coverage
+3. **AI processing** to identify most relevant papers
+4. **Filter by relevance** and export for analysis
+5. **Download full texts** for detailed review
+
+### **Trend Analysis**
+1. **Manual queries** for specific topics over time
+2. **Filter by publication year** and source
+3. **Keyword analysis** to identify emerging themes
+4. **Export data** for statistical analysis
+
+### **Citation Building**
+1. **Import from PMID/DOI lists** from other studies
+2. **AI summarization** for quick understanding
+3. **Relevance validation** against your work
+4. **Export formatted** for bibliography management
+
+## 🛠️ Troubleshooting
+
+### **Common Issues**
+
+#### **"API Key Not Found"**
+- Ensure your `.env` file is in the project root
+- Check that API keys are correctly formatted
+- Restart the application after adding keys
+
+#### **"No Results Found"**
+- Try simpler, more general search terms
+- Check if the specific database has content for your topic
+- Verify your internet connection
+
+#### **"LLM Processing Failed"**
+- Check your LLM provider's rate limits
+- Ensure sufficient API credits/quota
+- Try reducing batch sizes or adding delays
+
+#### **"PDF Download Failed"**
+- Not all papers have freely available PDFs
+- Some publishers block automated downloads
+- PubMed Central availability varies by paper
+
+### **Performance Tips**
+- Use specific keywords for better results
+- Start with smaller result limits (5-10 per source)
+- Process papers in batches for large collections
+- Regular backups of your CSV database
+
+## 🤝 Contributing
+
+We welcome contributions! Here's how to get started:
+
+1. **Fork** the repository
+2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
+3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
+4. **Push** to the branch (`git push origin feature/amazing-feature`)
+5. **Open** a Pull Request
+
+### **Development Setup**
+```bash
+# Clone your fork
+git clone https://github.com/your-username/PaperPulse.git
+cd PaperPulse
+
+# Install development dependencies
+pip install -r requirements.txt
+pip install pytest black flake8  # Optional: testing and formatting tools
+
+# Run tests (if available)
+pytest tests/
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- **CrewAI** for agent orchestration
+- **Gradio** for the web interface framework
+- **Scholarly** for Google Scholar access
+- **BioPython** for PubMed integration
+- **LiteLLM** for unified LLM provider interface
+
+## 📧 Support
+
+- **Issues**: [GitHub Issues](https://github.com/your-username/PaperPulse/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/your-username/PaperPulse/discussions)
+- **Email**: your-email@example.com
+
+---
+
+**🔬 Happy Researching with PaperPulse!**
+
+*Automate your literature discovery and focus on what matters most - your research.* 

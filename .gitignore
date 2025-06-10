@@ -19,26 +19,93 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual Environment
 venv/
 env/
 ENV/
 research_env/
+*.venv
 
-# IDE
+# IDE and Editors
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+.DS_Store
+Thumbs.db
 
-# Project specific
-*.csv
-backups/
+# Environment Variables
 .env
+.env.local
+.env.*.local
 
-# Logs
+# Project Specific - Data Files
+*.csv
+research_results.csv
+GCN_DAM*.csv
+*_export_*.csv
+paperpulse_export_*.csv
+
+# Project Specific - Directories
+backups/
+downloaded_papers/
+debug_pages/
+temp/
+tmp/
+
+# Logs and Debug Files
 *.log
+debug_tools.log
+*.debug
 
-# CSV Lock files
-.~lock.*.csv# 
+# CSV Lock Files (LibreOffice/Excel)
+.~lock.*.csv#
+.~*.tmp
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Archive files (unless specifically needed)
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# PDF downloads (since these can be large and regenerated)
+*.pdf
+
+# Chrome/Selenium temporary files
+chromedriver
+geckodriver
+*.crx 
